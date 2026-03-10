@@ -5,7 +5,7 @@ import time
 import os
 
 # Configuration
-IMAGE_PATH = "edge/data/test_image.jpg"
+IMAGE_PATH = "data/test_image.jpg"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "moondream"
 
