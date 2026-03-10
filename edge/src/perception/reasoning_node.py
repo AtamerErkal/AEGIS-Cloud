@@ -17,6 +17,19 @@ synthetic response so the rest of the pipeline keeps running.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Project-root bootstrap
+# Enables running from the AEGIS-Cloud/ root directory:
+#   python edge/src/perception/reasoning_node.py
+# without setting PYTHONPATH manually.
+# ---------------------------------------------------------------------------
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = str(_Path(__file__).resolve().parents[3])  # …/AEGIS-Cloud/
+if _PROJECT_ROOT not in _sys.path:
+    _sys.path.insert(0, _PROJECT_ROOT)
+del _sys, _Path, _PROJECT_ROOT
+
 import base64
 import logging
 import time
@@ -110,11 +123,15 @@ class ReasoningNode:
     Model: moondream (1.6B) — optimised for Jetson Nano 4GB edge deployment.
     Deploy: ``ollama pull moondream``
 
-    Circuit-Breaker
-    ---------------
+    Circuit-Breaker with Cool-down
+    --------------------------------
     After ``max_retries`` consecutive Ollama failures the node enters
     DEGRADED mode and returns pass-through results instantly, preventing
     pipeline stalls on a flapping Ollama process.
+
+    After ``cooldown_seconds`` the breaker automatically makes one probe
+    call.  On success it closes (ACTIVE); on failure it re-arms the timer
+    so the pipeline is never permanently blocked without a manual reset.
 
     Parameters
     ----------
@@ -129,8 +146,11 @@ class ReasoningNode:
 
         self.endpoint: str = self._rsn_cfg.get("ollama_endpoint", "http://localhost:11434")
         self.model: str = self._rsn_cfg.get("model_name", "moondream")
-        self.timeout: int = int(self._rsn_cfg.get("timeout_seconds", 15))
+        self.timeout: int = int(self._rsn_cfg.get("timeout_seconds", 60))
         self.max_retries: int = int(self._rsn_cfg.get("max_retries", 3))
+        self._cooldown_seconds: float = float(
+            self._rsn_cfg.get("cooldown_seconds", 120)
+        )
         self._image_resize_px: int = int(
             self._rsn_cfg.get("image_resize_px", _DEFAULT_IMAGE_RESIZE_PX)
         )
@@ -140,7 +160,8 @@ class ReasoningNode:
         )
 
         self._consecutive_failures: int = 0
-        self._degraded: bool = False   # Circuit-breaker flag
+        self._degraded: bool = False        # Circuit-breaker flag
+        self._degraded_since: float | None = None  # perf_counter timestamp when opened
 
         self.logger = logging.getLogger("AEGIS.ReasoningNode")
         self.logger.info(
@@ -179,7 +200,24 @@ class ReasoningNode:
             string so the XAI payload contract is never violated.
         """
         if self._degraded:
-            return self._degraded_result(detection_id)
+            # ── Cool-down probe ─────────────────────────────────────────────
+            # Once cooldown_seconds have elapsed, tentatively close the
+            # breaker and fall through to a real Ollama attempt.  If that
+            # attempt fails, the breaker re-opens and the timer resets.
+            if self._degraded_since is not None:
+                elapsed = time.perf_counter() - self._degraded_since
+                if elapsed >= self._cooldown_seconds:
+                    self.logger.info(
+                        f"[AEGIS] Circuit-breaker PROBING after "
+                        f"{elapsed:.0f}s cool-down — attempting Ollama call…"
+                    )
+                    self._degraded = False          # Tentatively close
+                    self._consecutive_failures = 0  # Fresh slate for the probe
+                    # Fall through to normal attempt below
+                else:
+                    return self._degraded_result(detection_id)
+            else:
+                return self._degraded_result(detection_id)
 
         crop_b64 = self._encode_crop(frame, bbox)
         t0 = time.perf_counter()
@@ -195,8 +233,10 @@ class ReasoningNode:
             )
             if self._consecutive_failures >= self.max_retries:
                 self._degraded = True
+                self._degraded_since = time.perf_counter()  # Start cool-down clock
                 self.logger.error(
-                    "[AEGIS] Circuit-breaker OPEN — ReasoningNode degraded to pass-through."
+                    f"[AEGIS] Circuit-breaker OPEN — ReasoningNode degraded to pass-through. "
+                    f"Will auto-probe after {self._cooldown_seconds:.0f}s."
                 )
             return ReasoningResult(
                 detection_id=detection_id,
@@ -354,5 +394,9 @@ class ReasoningNode:
             "model":                 self.model,
             "consecutive_failures":  self._consecutive_failures,
             "circuit_breaker_open":  self._degraded,
+            "cooldown_remaining_s":  max(
+                0.0,
+                self._cooldown_seconds - (time.perf_counter() - self._degraded_since)
+            ) if self._degraded and self._degraded_since else 0.0,
             "simulation_mode":       self._sim_mode,
         }

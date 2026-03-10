@@ -25,6 +25,19 @@ detection's metadata dict for Cloud consumption.
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# Project-root bootstrap
+# Enables running from the AEGIS-Cloud/ root directory:
+#   python edge/src/perception/vision_node.py
+# without setting PYTHONPATH manually.
+# ---------------------------------------------------------------------------
+import sys as _sys
+from pathlib import Path as _Path
+_PROJECT_ROOT = str(_Path(__file__).resolve().parents[3])  # …/AEGIS-Cloud/
+if _PROJECT_ROOT not in _sys.path:
+    _sys.path.insert(0, _PROJECT_ROOT)
+del _sys, _Path, _PROJECT_ROOT
+
 import logging
 import os
 import platform
@@ -189,7 +202,20 @@ class VisionNode:
             return yaml.safe_load(fh) or {}
 
     def _init_model(self) -> None:
-        """Load YOLOv8 model or skip in simulation-only mode."""
+        """
+        Load YOLOv8 model, auto-downloading it if the file is missing.
+
+        Download flow
+        -------------
+        1. If the configured ``.pt`` file exists → load directly (fast path).
+        2. If missing → attempt Ultralytics auto-download (requires internet).
+           The downloaded file is saved to the configured path so subsequent
+           starts skip the download entirely.
+        3. If download fails (e.g. no internet on Jetson) → warn and fall back
+           to mock detections so the pipeline keeps running.
+        """
+        import shutil
+
         model_path = Path(self._inf_cfg.get("model_path", "edge/models/yolov8n.pt"))
 
         if not _YOLO_AVAILABLE:
@@ -197,21 +223,44 @@ class VisionNode:
             return
 
         if not model_path.exists():
-            if self._sim_mode:
+            self.logger.warning(
+                f"[AEGIS] Model not found at {model_path}. "
+                "Attempting Ultralytics auto-download…"
+            )
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # Passing just the filename triggers Ultralytics CDN download.
+                # The file lands in the current working directory first.
+                tmp_model = YOLO(model_path.name)
+                # Move from cwd to the configured path if it was written there.
+                cwd_file = Path(model_path.name)
+                if cwd_file.exists() and cwd_file.resolve() != model_path.resolve():
+                    shutil.move(str(cwd_file), str(model_path))
+                    self.logger.info(
+                        f"[AEGIS] Model downloaded and saved to {model_path}."
+                    )
+                    # Reload from the final path to ensure consistent state.
+                    del tmp_model
+                else:
+                    # Model is in Ultralytics cache; keep the in-memory instance.
+                    self._model = tmp_model
+                    self.logger.info(
+                        "[AEGIS] Model downloaded (Ultralytics cache). "
+                        f"Copy to {model_path} for offline use: "
+                        f"`cp ~/.config/Ultralytics/{model_path.name} {model_path}`"
+                    )
+                    return
+            except Exception as exc:
                 self.logger.warning(
-                    f"[AEGIS] Model not found at {model_path}. "
-                    "Running in SIMULATION_MODE with mock detections."
+                    f"[AEGIS] Auto-download failed ({exc}). "
+                    "Falling back to mock detections — check internet connectivity."
                 )
                 return
-            raise FileNotFoundError(
-                f"YOLOv8 model not found: {model_path}\n"
-                "Set simulation_mode: true or provide the model file."
-            )
 
         device = self._inf_cfg.get("device", "cpu")
         self.logger.info(f"[AEGIS] Loading YOLOv8 model: {model_path}  device={device}")
         self._model = YOLO(str(model_path))
-        self.logger.info("[AEGIS] Model loaded successfully.")
+        self.logger.info("[AEGIS] Model loaded successfully — ACTIVE MODE.")
 
     def _init_capture(self) -> None:
         """Open video capture: sim file, live camera, or synthetic frames."""
