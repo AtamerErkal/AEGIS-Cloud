@@ -50,7 +50,7 @@ inference:
 reasoning:
   ollama_endpoint: "http://localhost:11434"   # Local Ollama server
   model_name: "moondream"                     # Ollama model tag after pull
-  timeout_seconds: 60                         # Jetson Nano cold-start; Moondream loads from swap
+  timeout_seconds: 120                        # Jetson Nano cold-start; Moondream loads from swap
   max_retries: 3                              # Circuit-breaker trip threshold
   cooldown_seconds: 120                       # Seconds before circuit-breaker auto-probes Ollama
   # Moondream uses 378×378 native vision resolution; we pass 336×336 crops

@@ -583,6 +583,12 @@ class VisionNode:
                 if detections and (self._reasoning or self._cloud):
                     self._process_pipeline(frame, detections)
 
+                    # Flush the capture buffer if we paused for reasoning on a live camera
+                    # to prevent processing old frames after Moondream finishes
+                    if self._reasoning is not None and not self._sim_mode and self._cap is not None:
+                        for _ in range(5):
+                            self._cap.grab()
+
                 yield detections
 
                 # Pace the loop to target_fps
@@ -623,11 +629,18 @@ class VisionNode:
             # Reasoning: run for every detection by default; can be
             # narrowed to Hostile-only via config in a future sprint.
             if self._reasoning is not None:
+                self.logger.warning(f"[AEGIS] TARGET DETECTED: {det.target_type}. FREEZING video feed / YOLO loop...")
+                
+                # Inference call (Synchronous, blocking YOLO)
                 result = self._reasoning.describe(
                     frame=frame,
                     bbox=det.bbox,
                     detection_id=det_id,
                 )
+                
+                self.logger.info(f"[AEGIS] Moondream Logic: {result.description}")
+                self.logger.warning("[AEGIS] RESUMING YOLO loop.")
+                
                 reasoning_results.append(result.to_dict())
                 # Inject Moondream description into the XAI stub for audit trail
                 det.xai_stub["reasoning_description"] = result.description
