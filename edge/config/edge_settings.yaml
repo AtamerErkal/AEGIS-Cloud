@@ -55,7 +55,7 @@ reasoning:
   cooldown_seconds: 120                       # Seconds before circuit-breaker auto-probes Ollama
   # Moondream uses 378×378 native vision resolution; we pass 336×336 crops
   # (closest power-of-2-friendly size) — the model handles the difference.
-  image_resize_px: 336                        # Crop size fed to the model
+  image_resize_px: 224                        # Crop size fed to the model
   options:
     temperature: 0.1                          # Low temp for deterministic tactical output
     num_predict: 200                          # Max tokens — keep descriptions concise
