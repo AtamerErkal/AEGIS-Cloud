@@ -273,10 +273,12 @@ class ReasoningNode:
         """
         Send the cropped image + tactical prompt to the Ollama Moondream model.
 
-        Tries the ``ollama`` Python library first (with a ThreadPoolExecutor
-        timeout so a slow Jetson cold-start never blocks forever); falls back
-        to a raw ``requests`` POST; finally returns a cached simulation
-        response if neither is available and SIMULATION_MODE is active.
+        Call order
+        ----------
+        1. ``requests`` HTTP POST — preferred; socket-level timeout is guaranteed.
+        2. ``ollama`` Python library — fallback; wrapped in a daemon thread so
+           ``self.timeout`` is enforced even on a slow Jetson cold-start.
+        3. SIM cached response — when no network lib is available.
         """
         self.logger.info(
             f"[AEGIS][ReasoningNode] Calling Moondream (timeout={self.timeout}s) — "
@@ -291,27 +293,7 @@ class ReasoningNode:
             }
         ]
 
-        # --- ollama Python library path (timeout enforced via thread) ---
-        if _OLLAMA_LIB:
-            def _lib_call() -> str:
-                resp = _ollama_lib.chat(
-                    model=self.model,
-                    messages=messages,
-                    options=self._model_options,
-                )
-                return resp["message"]["content"].strip()
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_lib_call)
-                try:
-                    return future.result(timeout=self.timeout)
-                except concurrent.futures.TimeoutError:
-                    raise TimeoutError(
-                        f"Ollama library call timed out after {self.timeout}s "
-                        "(Moondream still loading on Jetson?)"
-                    )
-
-        # --- requests HTTP fallback ---
+        # --- 1. requests HTTP path (hard timeout at socket level) ---
         if _REQUESTS_AVAILABLE:
             url = f"{self.endpoint}/api/chat"
             payload = {
@@ -324,7 +306,30 @@ class ReasoningNode:
             resp.raise_for_status()
             return resp.json()["message"]["content"].strip()
 
-        # --- Simulation fallback (no network libs available) ---
+        # --- 2. ollama library fallback (thread-based timeout) ---
+        if _OLLAMA_LIB:
+            def _lib_call() -> str:
+                resp = _ollama_lib.chat(
+                    model=self.model,
+                    messages=messages,
+                    options=self._model_options,
+                )
+                return resp["message"]["content"].strip()
+
+            _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = _executor.submit(_lib_call)
+            try:
+                result = future.result(timeout=self.timeout)
+                _executor.shutdown(wait=False)   # clean up without blocking
+                return result
+            except concurrent.futures.TimeoutError:
+                _executor.shutdown(wait=False)   # abandon thread — do NOT wait
+                raise TimeoutError(
+                    f"Ollama library call timed out after {self.timeout}s "
+                    "(Moondream cold-start on Jetson?)"
+                )
+
+        # --- 3. Simulation fallback ---
         if self._sim_mode:
             self.logger.warning(
                 "[AEGIS] No Ollama client available — using SIM cached response."
@@ -332,9 +337,10 @@ class ReasoningNode:
             return _SIM_RESPONSE
 
         raise RuntimeError(
-            "Cannot reach Ollama: neither 'ollama' library nor 'requests' "
+            "Cannot reach Ollama: neither 'requests' nor 'ollama' library "
             "is installed, and SIMULATION_MODE is False."
         )
+
 
     # ------------------------------------------------------------------
     # Helpers
