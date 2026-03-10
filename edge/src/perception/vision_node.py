@@ -667,7 +667,7 @@ if __name__ == "__main__":
     print(f"  Cloud Sync      : {'SIM file' if sync._sim_mode else 'IoT Hub'}")
     print(f"{'='*70}\n")
 
-    MAX_FRAMES = 10
+    MAX_FRAMES = 100
     for i, detections in enumerate(node.run()):
         for det in detections:
             print(det.to_nato_log())
