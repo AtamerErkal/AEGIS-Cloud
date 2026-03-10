@@ -667,14 +667,17 @@ if __name__ == "__main__":
     print(f"  Cloud Sync      : {'SIM file' if sync._sim_mode else 'IoT Hub'}")
     print(f"{'='*70}\n")
 
-    MAX_FRAMES = 100
-    for i, detections in enumerate(node.run()):
+    # Infinite loop — Ctrl+C to stop.
+    # Each frame waits for Moondream to respond before advancing.
+    for frame_idx, detections in enumerate(node.run(), start=1):
+        if not detections:
+            continue
+        print(f"\n── Frame {frame_idx} {'─' * 55}")
         for det in detections:
             print(det.to_nato_log())
             desc = det.xai_stub.get("reasoning_description", "")
             lat_ms = det.xai_stub.get("reasoning_inference_ms")
             if desc:
-                print(f"  ↳ Moondream [{lat_ms:.0f}ms]: {desc[:120]}")
-        if i >= MAX_FRAMES - 1:
-            print(f"\n[AEGIS] Integrated test complete — {MAX_FRAMES} frames.")
-            break
+                print(f"  ↳ Moondream [{lat_ms:.0f}ms]: {desc[:200]}")
+            else:
+                print(f"  ↳ Moondream: [waiting / circuit-breaker open]")
