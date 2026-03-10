@@ -1,0 +1,117 @@
+# =============================================================================
+# AEGIS-Cloud — Edge Configuration (Production-Ready)
+# =============================================================================
+# File:     edge/config/edge_settings.yaml
+# Platform: NVIDIA Jetson Nano (JetPack 5.x)
+#
+# DESIGN PRINCIPLES
+# -----------------
+# • SIMULATION_MODE=true: safe default — no hardware required for CI/CD.
+# • All hardware-dependent modules MUST read this file before any I/O.
+# • AIOps thresholds feed the Cloud self_healing_service.py.
+# • NATO_METADATA provides geographic context for Incident Reports.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# GLOBAL FLAGS
+# ---------------------------------------------------------------------------
+simulation_mode: true          # true = use sim data; false = live hardware
+log_level: "INFO"              # DEBUG | INFO | WARNING | ERROR | CRITICAL
+nato_log_format: true          # Enforce NATO Incident Report log lines
+
+# ---------------------------------------------------------------------------
+# INFERENCE  (YOLOv8 Vision Node)
+# ---------------------------------------------------------------------------
+inference:
+  model_path: "edge/models/yolov8n.pt"        # Ultralytics .pt or .engine
+  confidence_threshold: 0.50                  # Minimum detection confidence
+  nms_iou_threshold: 0.45                     # Non-max suppression IoU cutoff
+  target_classes:                             # Filter: only report these labels
+    - "person"
+    - "drone"
+    - "vehicle"
+  device: "cuda"                              # "cuda" | "cpu" | "0" (GPU idx)
+  image_size: 640                             # Inference resolution (px)
+  grad_cam_enabled: true                      # XAI: generate heatmap stubs
+  grad_cam_trigger: "Hostile"                 # Only generate for risk level
+  # Simulation sources
+  sim_video_path: "data/sim_samples/drone_flyby.mp4"
+  sim_fallback_color: [0, 128, 255]           # BGR placeholder frame colour
+  target_fps: 30
+
+# ---------------------------------------------------------------------------
+# REASONING  (Moondream Multimodal LLM via Ollama)
+# ---------------------------------------------------------------------------
+# Moondream is a 1.6B-parameter vision-language model optimised for
+# resource-constrained edge devices such as the Jetson Nano 4GB.
+#
+# Pull the model once:  ollama pull moondream
+# ---------------------------------------------------------------------------
+reasoning:
+  ollama_endpoint: "http://localhost:11434"   # Local Ollama server
+  model_name: "moondream"                     # Ollama model tag after pull
+  timeout_seconds: 15                         # Reduced from 30 — Moondream is fast
+  max_retries: 3                              # Circuit-breaker trip threshold
+  # Moondream uses 378×378 native vision resolution; we pass 336×336 crops
+  # (closest power-of-2-friendly size) — the model handles the difference.
+  image_resize_px: 336                        # Crop size fed to the model
+  options:
+    temperature: 0.1                          # Low temp for deterministic tactical output
+    num_predict: 200                          # Max tokens — keep descriptions concise
+
+# ---------------------------------------------------------------------------
+# SENSORS  (Fusion Engine / Driver Interface)
+# ---------------------------------------------------------------------------
+sensors:
+  sample_rate_hz: 100
+  imu:
+    i2c_bus: 1
+    i2c_address: 0x69          # ICM-20948 default address
+    sim_trace_path: "data/sim_samples/imu_trace.csv"
+  tof:
+    i2c_bus: 1
+    i2c_address: 0x29          # VL6180X default address
+    sim_trace_path: "data/sim_samples/tof_trace.csv"
+
+# ---------------------------------------------------------------------------
+# CLOUD SYNC  (Azure IoT Hub Gateway)
+# ---------------------------------------------------------------------------
+cloud_sync:
+  iot_hub_connection_env: "AEGIS_IOT_HUB_CONN_STR"  # Env var holding conn str
+  telemetry_interval_seconds: 1
+  retry_max_attempts: 5
+  retry_backoff_base_seconds: 2
+  sim_output_path: "data/logs/sim_cloud_sync.jsonl"
+  sim_commands_path: "data/sim_samples/c2d_commands.json"
+
+# ---------------------------------------------------------------------------
+# MOTOR / PLATFORM  (Self-Healing Targets — consumed by Cloud)
+# ---------------------------------------------------------------------------
+motor:
+  speed_min_rpm: 200
+  speed_max_rpm: 8000
+  vibration_safe_threshold_g: 2.5   # G-force RMS — triggers safe-mode above
+
+# ---------------------------------------------------------------------------
+# AIOPS  (Health Monitoring & Telemetry)
+# ---------------------------------------------------------------------------
+aiops:
+  hardware_check_interval: 2.0       # Seconds between hardware health polls
+  temp_threshold: 75                 # °C — alert if SoC temp exceeds this
+  vibration_limit: 2.5               # G-force limit mirrors motor threshold
+  telemetry_buffer_path: "data/logs/"
+  anomaly_alert_threshold: 3         # Consecutive anomalies before escalation
+  health_check_interval_seconds: 10
+
+# ---------------------------------------------------------------------------
+# NATO METADATA  (Incident Report Context)
+# ---------------------------------------------------------------------------
+nato_metadata:
+  station_id: "AEGIS-EDGE-001"
+  unit_designation: "DIEHL-GARMR-UNIT-1"
+  unit_coordinates:                  # WGS-84 placeholders — update on deployment
+    lat: 0.0000
+    lon: 0.0000
+    alt_m: 0.0
+  classification_level: "UNCLASSIFIED//FOR TRAINING ONLY"
+  reporting_format: "STANAG-4586-STUB"

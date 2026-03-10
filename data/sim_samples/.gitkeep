@@ -1,0 +1,13 @@
+# AEGIS-Cloud — Simulation Data Directory
+# ========================================
+# This directory contains synthetic drone/hostile video files, sensor
+# traces, and pre-cached AI response files used when the system is
+# running in SIMULATION_MODE.
+#
+# Expected contents (to be populated):
+#   • drone_flyby.mp4       — Synthetic drone flight video
+#   • hostile_approach.mp4  — Simulated hostile UAS approach
+#   • imu_trace.csv         — Pre-recorded ICM-20948 IMU trace
+#   • tof_trace.csv         — Pre-recorded VL6180X ToF trace
+#   • llava_cache.json      — Pre-cached LLaVA reasoning responses
+#   • c2d_commands.json     — Simulated Cloud-to-Device commands

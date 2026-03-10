@@ -1,0 +1,41 @@
+# =============================================================================
+# AEGIS-Cloud — Edge Runtime Requirements
+# =============================================================================
+# Install: pip install -r requirements-edge.txt
+# Python:  3.10+
+#
+# Notes
+# -----
+# • opencv-python-headless is used instead of opencv-python on the Jetson
+#   Nano (no display server) — swap as needed for local dev with a GUI.
+# • pynvml is only available / useful on NVIDIA hardware; the module
+#   imports it with a graceful try/except so it is optional.
+# • ultralytics auto-downloads yolov8n.pt from the internet on first run.
+#   Pre-download to edge/models/ for air-gapped deployments.
+# =============================================================================
+
+# Core vision & inference
+opencv-python>=4.8.0          # Use opencv-python-headless on Jetson
+ultralytics>=8.0.0            # YOLOv8 (includes torch dependency)
+numpy>=1.24.0
+
+# Configuration
+pyyaml>=6.0
+
+# AIOps telemetry
+psutil>=5.9.0
+
+# GPU telemetry (NVIDIA only — optional, soft-import in vision_node.py)
+# pynvml>=11.5.0
+
+# Azure IoT Hub (cloud_sync.py — install when wiring up comm layer)
+# azure-iot-device>=2.13.0
+
+# Ollama / LLaVA (reasoning_node.py)
+# requests>=2.31.0
+
+# Dev / testing
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+# ruff>=0.1.0
+# mypy>=1.6.0

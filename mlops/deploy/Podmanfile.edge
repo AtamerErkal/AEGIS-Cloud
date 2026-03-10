@@ -1,0 +1,55 @@
+# =============================================================================
+# AEGIS-Cloud — MLOps / Deploy / Podmanfile.edge
+# =============================================================================
+# Platform:  Podman (OCI-compliant, rootless container runtime)
+# Target:    NVIDIA Jetson Nano (ARM64 / JetPack 5.x base)
+#
+# PURPOSE
+# -------
+# Container image definition for the AEGIS Edge runtime.  Packages all
+# Edge Python modules (perception, sensors, comm) with their
+# dependencies into a reproducible, deployable unit.
+#
+# The container is designed to run in SIMULATION_MODE by default inside
+# CI/CD (GitHub Actions) and can be switched to live-hardware mode via
+# environment variable override at deployment time.
+#
+# KEY LAYERS
+# ----------
+# 1. Base:       NVIDIA L4T (Linux for Tegra) with CUDA + TensorRT
+# 2. Python:     Python 3.10 + pip dependencies (ultralytics, etc.)
+# 3. Models:     YOLOv8-nano TensorRT engine (mounted volume or baked)
+# 4. App:        edge/src/ + edge/config/
+# 5. Entrypoint: Python main loop (vision → reasoning → cloud_sync)
+#
+# DESIGN NOTES
+# ------------
+# • SIMULATION_MODE is controlled by env var AEGIS_SIMULATION_MODE.
+# • Sensor drivers use /dev/i2c-* device pass-through (--device flag).
+# • Telemetry logs are written to a mounted volume at /data/logs/.
+# • The container healthcheck calls VisionNode.health_check().
+# =============================================================================
+
+# FROM nvcr.io/nvidia/l4t-ml:r35.2.1-py3
+
+# LABEL maintainer="AEGIS-Cloud Team <aegis@diehl.com>"
+# LABEL description="AEGIS Edge Runtime — Tactical Perception Layer"
+# LABEL version="0.1.0-skeleton"
+
+# ENV AEGIS_SIMULATION_MODE=true
+# ENV PYTHONUNBUFFERED=1
+
+# WORKDIR /app
+
+# COPY edge/src/ ./edge/src/
+# COPY edge/config/ ./edge/config/
+# COPY requirements-edge.txt .
+
+# RUN pip install --no-cache-dir -r requirements-edge.txt
+
+# VOLUME ["/data/logs", "/data/sim_samples", "/app/edge/models"]
+
+# HEALTHCHECK --interval=30s --timeout=5s \
+#   CMD python -c "from edge.src.perception.vision_node import VisionNode; print(VisionNode().health_check())"
+
+# ENTRYPOINT ["python", "-m", "edge.src.main"]

@@ -1,0 +1,52 @@
+# =============================================================================
+# AEGIS-Cloud — MLOps / Pipelines / DVC Tracking Configuration
+# =============================================================================
+# File:     mlops/pipelines/dvc_tracking.yaml
+#
+# PURPOSE
+# -------
+# Data Version Control (DVC) configuration for tracking simulation
+# datasets, model artifacts, and telemetry logs.  Ensures full
+# reproducibility of experiments and CI/CD test runs.
+#
+# TRACKED ASSETS
+# --------------
+# • data/sim_samples/   — Synthetic drone video, sensor traces, and
+#                         pre-cached LLaVA responses used for
+#                         SIMULATION_MODE testing.
+# • edge/models/        — YOLOv8 ONNX/TensorRT model artifacts
+#                         (large binary files excluded from Git).
+#
+# DESIGN NOTES
+# ------------
+# • DVC remote is configured to Azure Blob Storage for Diehl Defence
+#   team access.
+# • The GitHub Actions pipeline (github_actions_ci.yml) runs
+#   `dvc pull` before integration tests to hydrate sim_samples.
+# • Model artifacts are versioned separately from code to support
+#   independent retraining cycles (VANGUARD decoupling).
+# =============================================================================
+
+# DVC pipeline stages (to be expanded with functional code)
+stages:
+  prepare_sim_data:
+    cmd: echo "Placeholder — download/generate simulation datasets"
+    deps:
+      - data/sim_samples/
+    outs:
+      - data/sim_samples/:
+          persist: true
+
+  validate_models:
+    cmd: echo "Placeholder — validate model artifact checksums"
+    deps:
+      - edge/models/
+    metrics:
+      - metrics/model_validation.json:
+          cache: false
+
+# Remote storage configuration
+# remote:
+#   name: azure-dvc
+#   url: az://aegis-dvc-store/artifacts
+#   connection_string: ${AZURE_STORAGE_CONNECTION_STRING}

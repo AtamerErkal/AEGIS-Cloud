@@ -1,0 +1,34 @@
+# =============================================================================
+# AEGIS-Cloud — Compliance Audit Trail
+# =============================================================================
+# File:     mlops/compliance/audit_trail.log
+# Format:   NATO-Style Incident Report (structured log)
+#
+# PURPOSE
+# -------
+# Immutable, append-only log of all high-risk AI decisions, self-healing
+# commands, and Human-in-the-Loop (HITL) approvals/rejections.
+#
+# This file is the primary artefact for EU AI Act Article 12 (Record-
+# Keeping) compliance audits.  Every entry must contain:
+#
+#   Timestamp (ISO-8601) | Event_Type | Correlation_ID |
+#   Classification | Confidence | XAI_Evidence_Ref |
+#   Human_Decision | Justification | Lat/Long
+#
+# EVENT TYPES
+# -----------
+#   DETECTION       — New target detected by Edge Vision Node
+#   CLASSIFICATION  — Threat classification issued by Cloud Evaluator
+#   SELF_HEALING    — Motor-speed command issued by Self-Healing Service
+#   HITL_APPROVAL   — Human operator approved a Hostile classification
+#   HITL_REJECTION  — Human operator rejected a Hostile classification
+#   MODEL_UPDATE    — New model version deployed (YOLO or VANGUARD)
+#   SYSTEM_ANOMALY  — AIOps health alert triggered
+#
+# RETENTION POLICY
+# ----------------
+# Entries must be retained for a minimum of 10 years per EU AI Act
+# Article 12 requirements for high-risk AI systems.
+#
+# --- Log entries below this line ---

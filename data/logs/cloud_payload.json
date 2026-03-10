@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.1",
+  "message_id": 9,
+  "timestamp_utc": "2026-03-10T09:10:54.108Z",
+  "nato_metadata": {
+    "station_id": "AEGIS-EDGE-001",
+    "unit_designation": "DIEHL-GARMR-UNIT-1",
+    "classification_level": "UNCLASSIFIED//FOR TRAINING ONLY",
+    "reporting_format": "STANAG-4586-STUB",
+    "coordinates": {
+      "lat": 0.0,
+      "lon": 0.0,
+      "alt_m": 0.0
+    }
+  },
+  "detections": [
+    {
+      "timestamp_utc": "2026-03-10T09:10:54.108Z",
+      "station_id": "AEGIS-EDGE-001",
+      "coordinates": {
+        "lat": 0.0,
+        "lon": 0.0
+      },
+      "target_type": "drone",
+      "confidence": 0.81,
+      "bbox": [
+        0.3,
+        0.25,
+        0.55,
+        0.45
+      ],
+      "risk_level": "Hostile",
+      "xai_stub": {
+        "status": "PENDING_GRAD_CAM",
+        "method": "Grad-CAM",
+        "target_class": "drone",
+        "risk_level": "Hostile",
+        "bbox_attention": [
+          0.3,
+          0.25,
+          0.55,
+          0.45
+        ],
+        "heatmap_b64": null,
+        "shap_values": null,
+        "eu_ai_act_compliant": false,
+        "crop_shape": [
+          96,
+          160,
+          3
+        ],
+        "llava_description": "[PASS-THROUGH — ReasoningNode circuit-breaker open]",
+        "llava_inference_ms": 0.0
+      },
+      "aiops_meta": {
+        "cpu_percent": 10.6,
+        "ram_used_mb": 267.91,
+        "gpu_temp_c": null,
+        "gpu_util_pct": null,
+        "latency_ms": 0.01,
+        "uptime_s": 6.6,
+        "platform": "DESKTOP-ME1R7OR"
+      },
+      "frame_id": 9
+    }
+  ],
+  "reasoning": [
+    {
+      "detection_id": "frame9_2026-03-10T09:10:54.108Z",
+      "status": "PASS_THROUGH",
+      "description": "",
+      "model_used": "llava:7b-v1.5-q4_K_M",
+      "inference_time_ms": 0.0,
+      "simulation_mode": true,
+      "error": "Circuit-breaker open after repeated Ollama failures."
+    }
+  ],
+  "hardware_telemetry": {
+    "cpu_percent": 10.6,
+    "ram_used_mb": 267.91,
+    "gpu_temp_c": null,
+    "gpu_util_pct": null,
+    "latency_ms": 0.01,
+    "uptime_s": 6.6,
+    "platform": "DESKTOP-ME1R7OR"
+  },
+  "azure_function_hints": {
+    "trigger_classification": "Hostile",
+    "hostile_count": 1,
+    "unknown_count": 0,
+    "reasoning_available": false,
+    "priority": "HIGH",
+    "human_review_required": true
+  }
+}

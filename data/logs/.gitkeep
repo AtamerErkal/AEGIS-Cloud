@@ -1,0 +1,10 @@
+# AEGIS-Cloud — Telemetry & Health Logs Directory
+# =================================================
+# Buffer directory for AIOps health logs, telemetry streams, and
+# simulation output files.
+#
+# Expected contents (generated at runtime):
+#   • sim_cloud_sync.jsonl  — Simulation-mode D2C telemetry output
+#   • vision_health.jsonl   — Vision Node FPS/latency metrics
+#   • sensor_health.jsonl   — Sensor driver health reports
+#   • fusion_telemetry.jsonl — Fused PlatformState records

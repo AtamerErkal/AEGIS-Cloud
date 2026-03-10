@@ -1,0 +1,54 @@
+# =============================================================================
+# AEGIS-Cloud — MLOps / Deploy / Podmanfile.cloud
+# =============================================================================
+# Platform:  Podman (OCI-compliant, rootless container runtime)
+# Target:    Azure Container Apps / OpenShift (AMD64)
+#
+# PURPOSE
+# -------
+# Container image definition for the AEGIS Cloud runtime.  Packages the
+# Azure Functions host, LangChain threat evaluator agent, VANGUARD API
+# client, RAG context engine, and self-healing service into a single
+# deployable unit.
+#
+# KEY LAYERS
+# ----------
+# 1. Base:       Microsoft Azure Functions Python base image
+# 2. Python:     Python 3.11 + pip dependencies (langchain, azure-*, etc.)
+# 3. App:        cloud/ source tree
+# 4. Entrypoint: Azure Functions host (func start)
+#
+# DESIGN NOTES
+# ------------
+# • All secrets (IoT Hub conn string, Cosmos DB key, VANGUARD API key)
+#   are injected as environment variables at runtime — NEVER baked in.
+# • The container healthcheck pings the VANGUARD API health endpoint
+#   to verify upstream connectivity.
+# • Audit trail logs are written to a mounted volume at /data/logs/.
+# =============================================================================
+
+# FROM mcr.microsoft.com/azure-functions/python:4-python3.11
+
+# LABEL maintainer="AEGIS-Cloud Team <aegis@diehl.com>"
+# LABEL description="AEGIS Cloud Runtime — Strategic Reasoning Layer"
+# LABEL version="0.1.0-skeleton"
+
+# ENV AzureWebJobsScriptRoot=/app
+# ENV PYTHONUNBUFFERED=1
+
+# WORKDIR /app
+
+# COPY cloud/ ./cloud/
+# COPY requirements-cloud.txt .
+# COPY host.json .
+
+# RUN pip install --no-cache-dir -r requirements-cloud.txt
+
+# VOLUME ["/data/logs"]
+
+# HEALTHCHECK --interval=60s --timeout=10s \
+#   CMD python -c "from cloud.integrations.vanguard_api_client import VanguardAPIClient; print(VanguardAPIClient().health_check())"
+
+# EXPOSE 80
+
+# ENTRYPOINT ["func", "start", "--python"]

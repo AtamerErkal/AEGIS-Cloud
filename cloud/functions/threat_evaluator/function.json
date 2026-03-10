@@ -1,0 +1,30 @@
+{
+    "_comment": [
+        "AEGIS-Cloud — Cloud / Functions / Threat Evaluator / Function Config",
+        "",
+        "PURPOSE: Azure Function trigger and binding configuration for the",
+        "Threat Evaluator agent.  This function is triggered by IoT Hub",
+        "telemetry events routed through Azure Event Grid.",
+        "",
+        "DESIGN: The Event Grid trigger receives detection events and enriched",
+        "telemetry from the Edge layer.  The function output binding writes",
+        "the ThreatAssessment result to Cosmos DB for Power BI consumption",
+        "and audit purposes."
+    ],
+    "scriptFile": "threat_evaluator.py",
+    "bindings": [
+        {
+            "type": "eventGridTrigger",
+            "name": "telemetryEvent",
+            "direction": "in"
+        },
+        {
+            "type": "cosmosDB",
+            "name": "assessmentOutput",
+            "direction": "out",
+            "databaseName": "aegis-decisions",
+            "containerName": "threat-assessments",
+            "connectionStringSetting": "COSMOS_DB_CONNECTION"
+        }
+    ]
+}
