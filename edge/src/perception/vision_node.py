@@ -327,87 +327,57 @@ class VisionNode:
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         """
-        Run YOLOv8 inference on ``frame`` and return filtered detections.
-
-        Parameters
-        ----------
-        frame : np.ndarray
-            BGR image (H×W×3) from camera or simulation.
-
-        Returns
-        -------
-        list[Detection]
-            Filtered detections passing the confidence threshold and
-            target-class filter, each enriched with XAI and AIOps data.
+        Runs YOLOv8 inference and returns filtered detections.
         """
-        t0 = time.perf_counter()
         raw_results = self._run_inference(frame)
-        latency_ms = (time.perf_counter() - t0) * 1000.0
-
-        aiops_meta = self._collect_aiops_telemetry(latency_ms)
         detections: list[Detection] = []
 
-        for box_data in raw_results:
-            cls_name, confidence, bbox = box_data
+        for cls_name, confidence, bbox in raw_results:
+            # Filter by class and confidence based on YAML settings
             if cls_name not in self._target_classes:
                 continue
             if confidence < self._conf_threshold:
                 continue
 
-            risk = _RISK_MAP.get(cls_name, "Unknown")
-            xai_stub = self._build_xai_stub(frame, bbox, cls_name, risk)
-
+            # Create Detection object
             det = Detection(
-                timestamp_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                timestamp_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 station_id=self._nato_cfg.get("station_id", "AEGIS-EDGE-001"),
-                lat=float(self._nato_cfg.get("unit_coordinates", {}).get("lat", 0.0)),
-                lon=float(self._nato_cfg.get("unit_coordinates", {}).get("lon", 0.0)),
+                lat=float(self._nato_cfg.get("unit_coordinates", {}).get("lat", 48.3984)),
+                lon=float(self._nato_cfg.get("unit_coordinates", {}).get("lon", 10.0011)),
                 target_type=cls_name,
                 confidence=round(float(confidence), 4),
                 bbox=bbox,
-                risk_level=risk,
-                xai_stub=xai_stub,
-                aiops_meta=aiops_meta,
-                frame_id=self._frame_id,
+                risk_level="Hostile" if cls_name == "drone" else "Unknown",
+                frame_id=self._frame_id
             )
             detections.append(det)
-            self._log_detection(det)
-
+            
         return detections
 
     def _run_inference(self, frame: np.ndarray) -> list[tuple[str, float, list[float]]]:
         """
-        Execute YOLO inference and return raw (class, confidence, bbox) tuples.
-
-        Falls back to synthetic mock data if the model is unavailable
-        (simulation mode or ultralytics not installed).
+        Executes YOLOv8 or returns Mock Data if in Simulation Mode.
         """
-        if self._model is not None:
-            img_size = int(self._inf_cfg.get("image_size", 640))
-            results = self._model.predict(
-                source=frame,
-                imgsz=img_size,
-                conf=self._conf_threshold,
-                iou=float(self._inf_cfg.get("nms_iou_threshold", 0.45)),
-                verbose=False,
-            )
-            raw: list[tuple[str, float, list[float]]] = []
+        # 1. Real YOLO Inference
+        if self._model is not None and not self._sim_mode:
+            results = self._model.predict(source=frame, conf=self._conf_threshold, verbose=False)
+            raw = []
             for r in results:
-                if r.boxes is None:
-                    continue
-                names = r.names
                 for box in r.boxes:
                     cls_id = int(box.cls.item())
-                    cls_name = names.get(cls_id, str(cls_id)).lower()
+                    cls_name = r.names.get(cls_id, "unknown").lower()
                     conf = float(box.conf.item())
-                    xyxyn = box.xyxyn.tolist()[0]   # Normalised [x1,y1,x2,y2]
-                    raw.append((cls_name, conf, xyxyn))
+                    bbox = box.xyxyn.tolist()[0] # Normalised [x1, y1, x2, y2]
+                    raw.append((cls_name, conf, bbox))
             return raw
 
-        # --- Mock inference for simulation / dev environments ---
+        # 2. Mock Data for Simulation (Triggers every frame)
         if self._sim_mode:
-            mock_conf = round(0.72 + (self._frame_id % 10) * 0.01, 4)
-            return [("drone", mock_conf, [0.30, 0.25, 0.55, 0.45])]
+            # We simulate a drone with a shifting confidence
+            mock_conf = round(0.80 + (self._frame_id % 5) * 0.02, 4)
+            return [("drone", mock_conf, [0.3, 0.3, 0.6, 0.6])]
+
         return []
 
     # ------------------------------------------------------------------
@@ -567,7 +537,7 @@ class VisionNode:
                 # --- AIOPS HEARTBEAT ---
                 # Prints status every 5 frames to confirm the process is alive
                 if self._frame_id % 5 == 0:
-                    cpu_usage = psutil.cpu_percent() if _PSUTIL_AVAILABLE else "N/A"
+                    cpu_usage = psutil.cpu_percent(interval=0.1)
                     print(f"[HEARTBEAT] Frame: {self._frame_id} | CPU: {cpu_usage}% | Running...")
 
                 frame = self._next_frame()
