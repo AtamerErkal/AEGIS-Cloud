@@ -277,14 +277,18 @@ class VisionNode:
                 )
                 self._cap = None   # Will generate placeholder frames
         else:
-            cam_idx = 0
-            self._cap = cv2.VideoCapture(cam_idx)
-            if not self._cap.isOpened():
-                raise RuntimeError(
-                    f"Cannot open camera index {cam_idx}. "
-                    "Check connection or set simulation_mode: true."
-                )
-            self.logger.info(f"[AEGIS] LIVE MODE — camera index {cam_idx} opened.")
+            # cam_idx = 0
+            # self._cap = cv2.VideoCapture(cam_idx)
+            
+            # [AIOPS FIX] Kameramız olmadığı için gerçek modda dahi simülasyon videosunu kullanalım:
+            sim_path = self._inf_cfg.get("sim_video_path", "data/sim_samples/drone_flyby.mp4")
+            
+            if sim_path and Path(sim_path).exists():
+                self._cap = cv2.VideoCapture(str(sim_path))
+                self.logger.info(f"[AEGIS] LIVE MODE — but reading from {sim_path} (No HW Camera)")
+            else:
+                self.logger.warning(f"[AEGIS] LIVE MODE — video {sim_path} completely missing, generating synthetic frame fallback!")
+                self._cap = None
 
     # ------------------------------------------------------------------
     # Frame generation

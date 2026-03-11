@@ -87,6 +87,11 @@ class CloudSync:
             self._sim_mode = True
             return
 
+        # Force load .env from the project root since cwd might differ
+        from dotenv import load_dotenv
+        env_path = Path.home() / "AEGIS-Cloud" / ".env"
+        load_dotenv(env_path)
+
         env_key = self._sync_cfg.get("iot_hub_connection_env", "AEGIS_IOT_HUB_CONN_STR")
         conn_str = os.environ.get(env_key, "")
         
@@ -94,6 +99,9 @@ class CloudSync:
             self.logger.error(f"[AEGIS] Env-var '{env_key}' is empty. Cannot connect to Cloud.")
             self._sim_mode = True
             return
+
+        # [AIOPS FIX] If we found a connection string, force sim_mode to False
+        self._sim_mode = False
 
         max_attempts = int(self._sync_cfg.get("retry_max_attempts", 5))
         backoff = float(self._sync_cfg.get("retry_backoff_base_seconds", 2))
