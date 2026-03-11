@@ -159,6 +159,7 @@ class VisionNode:
         reasoning_node: "ReasoningNode | None" = None,
         cloud_sync: "CloudSync | None" = None,
     ) -> None:
+        print("[DEBUG] 1. Config loading...")
         self._cfg = self._load_config(Path(config_path))
         self._sim_mode: bool = self._cfg.get("simulation_mode", True)
         self._inf_cfg: dict = self._cfg.get("inference", {})
@@ -548,54 +549,46 @@ class VisionNode:
 
     def run(self) -> Generator[list[Detection], None, None]:
         """
-        Continuous detection loop — yields a list of Detection objects
-        per frame.  Use ``run()`` as an iterator in the main Edge loop.
-
-        Example
-        -------
-        >>> node = VisionNode()
-        >>> for detections in node.run():
-        ...     for det in detections:
-        ...         print(det.to_nato_log())
+        Modified loop with Heartbeat and Sub-sampling to prevent Jetson Nano lockup.
         """
         self.logger.info(
             f"[AEGIS] VisionNode starting — "
             f"{'SIMULATION' if self._sim_mode else 'LIVE'} mode | "
-            f"targets={self._target_classes} | conf≥{self._conf_threshold} | "
-            f"reasoning={'ON' if self._reasoning else 'OFF'} | "
-            f"cloud_sync={'ON' if self._cloud else 'OFF'}"
+            f"reasoning={'ON' if self._reasoning else 'OFF'}"
         )
-        target_fps: float = float(self._inf_cfg.get("target_fps", 30))
-        frame_delay: float = 1.0 / max(target_fps, 1)
+        
+        target_fps: float = float(self._inf_cfg.get("target_fps", 1))
+        frame_delay: float = 1.0 / max(target_fps, 0.1)
 
         try:
             while True:
                 loop_start = time.perf_counter()
+                
+                # --- AIOPS HEARTBEAT ---
+                # Prints status every 5 frames to confirm the process is alive
+                if self._frame_id % 5 == 0:
+                    cpu_usage = psutil.cpu_percent() if _PSUTIL_AVAILABLE else "N/A"
+                    print(f"[HEARTBEAT] Frame: {self._frame_id} | CPU: {cpu_usage}% | Running...")
+
                 frame = self._next_frame()
                 if frame is None:
-                    self.logger.warning("[AEGIS] No frame returned — exiting loop.")
                     break
 
                 detections = self.detect(frame)
                 self._frame_id += 1
 
-                # ── Reasoning + Cloud pipeline ──────────────────────────
-                if detections and (self._reasoning or self._cloud):
-                    self._process_pipeline(frame, detections)
-
-                    # Flush the capture buffer if we paused for reasoning on a live camera
-                    # to prevent processing old frames after Moondream finishes
-                    if self._reasoning is not None and not self._sim_mode and self._cap is not None:
-                        for _ in range(5):
-                            self._cap.grab()
+                # --- STRATEGIC SUB-SAMPLING ---
+                # Only trigger reasoning if detections exist AND it's a specific frame interval
+                if detections and self._reasoning:
+                    # In Simulation: Reason only every 50th frame to prevent Swap flooding
+                    # In Live Mode: Reason every time a target is found (Sequential)
+                    if not self._sim_mode or (self._frame_id % 50 == 0):
+                        self._process_pipeline(frame, detections)
 
                 yield detections
 
-                # Pace the loop to target_fps
                 elapsed = time.perf_counter() - loop_start
-                sleep_time = frame_delay - elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                time.sleep(max(0, frame_delay - elapsed))
 
         except KeyboardInterrupt:
             self.logger.info("[AEGIS] VisionNode stopped by operator.")
@@ -612,41 +605,37 @@ class VisionNode:
         detections: list["Detection"],
     ) -> None:
         """
-        For each high-confidence detection, optionally:
-        1. Call ReasoningNode to get a Moondream tactical description.
-        2. Bundle detections + reasoning results into a CloudSync D2C message.
-
-        Only fires for detections above ``confidence_threshold`` (already
-        guaranteed by ``detect()``) — additional guard is risk-level based:
-        we prioritise Hostile targets for reasoning to save compute.
+        Sequential execution: Freezes YOLO and calls Moondream for the first detected target.
         """
         reasoning_results: list[dict] = []
         aiops_snapshot: dict = detections[0].aiops_meta if detections else {}
 
         for det in detections:
-            det_id = f"frame{det.frame_id}_{det.timestamp_utc}"
-
-            # Reasoning: run for every detection by default; can be
-            # narrowed to Hostile-only via config in a future sprint.
+            # For now, we only reason for the FIRST target to save Jetson resources
             if self._reasoning is not None:
-                self.logger.warning(f"[AEGIS] TARGET DETECTED: {det.target_type}. FREEZING video feed / YOLO loop...")
+                # LOGGING: Vital to see this in the terminal during the 200s wait
+                self.logger.warning(f"!!! [TACTICAL ALERT] Target: {det.target_type} | Starting VLM Reasoning (Est. 200s)...")
                 
-                # Inference call (Synchronous, blocking YOLO)
+                det_id = f"f{det.frame_id}_{int(time.time())}"
+                
+                # Execution blocks here while Moondream works
                 result = self._reasoning.describe(
                     frame=frame,
                     bbox=det.bbox,
                     detection_id=det_id,
                 )
                 
-                self.logger.info(f"[AEGIS] Moondream Logic: {result.description}")
-                self.logger.warning("[AEGIS] RESUMING YOLO loop.")
+                self.logger.info(f"[AEGIS] Moondream Report: {result.description}")
+                self.logger.warning("[AEGIS] VLM reasoning complete. Resuming perception loop.")
                 
                 reasoning_results.append(result.to_dict())
-                # Inject Moondream description into the XAI stub for audit trail
                 det.xai_stub["reasoning_description"] = result.description
                 det.xai_stub["reasoning_inference_ms"] = result.inference_time_ms
+                
+                # Break after first target to keep the edge loop stable
+                break
 
-        # Cloud Sync: send composite NATO payload
+        # Cloud Sync: remains unchanged
         if self._cloud is not None:
             det_dicts = [d.to_dict() for d in detections]
             self._cloud.send(
