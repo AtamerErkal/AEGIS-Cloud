@@ -2,58 +2,60 @@ import requests
 import base64
 import json
 import time
-import os
+import cv2
+import numpy as np
 
-# Configuration
 IMAGE_PATH = "data/test_image.jpg"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "moondream"
 
 def run_tactical_inference():
-    """
-    Performs a standalone VLM inference using Moondream.
-    Optimized for resource-constrained edge devices (NVIDIA Jetson Nano).
-    """
-    print(f"[INFO] Initializing AEGIS-Cloud Tactical Reasoning...")
+    print(f"[INFO] Initializing AEGIS-Cloud Tactical Reasoning (Optimization: 224px)...")
     
-    if not os.path.exists(IMAGE_PATH):
-        print(f"[ERROR] Local intelligence asset not found: {IMAGE_PATH}")
+    # Step 1: Resize image manually to 224px (Lighter for Jetson RAM)
+    img = cv2.imread(IMAGE_PATH)
+    if img is None:
+        print("[ERROR] Image not found!")
         return
+    img_resized = cv2.resize(img, (224, 224))
+    _, buffer = cv2.imencode(".jpg", img_resized)
+    img_payload = base64.b64encode(buffer).decode('utf-8')
+
+    # Step 2: Payload with strict options
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": "What do you see in this mountain lake image? Describe briefly.",
+        "stream": False,
+        "options": {
+            "num_predict": 100, 
+            "temperature": 0.2
+        },
+        "images": [img_payload]
+    }
+
+    print(f"[PROCESS] Uplinking to Moondream. Expecting faster results at 224px...")
+    start_ts = time.time()
 
     try:
-        # Step 1: Encode visual data to Base64
-        with open(IMAGE_PATH, "rb") as image_file:
-            img_payload = base64.b64encode(image_file.read()).decode('utf-8')
-
-        # Step 2: Prepare Tactical Prompt
-        payload = {
-            "model": MODEL_NAME,
-            "prompt": "Act as a defense operator. Provide a concise tactical threat report of this image. Identify objects and risk level.",
-            "stream": False,
-            "images": [img_payload]
-        }
-
-        print(f"[PROCESS] Uplinking to Moondream VLM. Latency expected due to Swap I/O. Waiting...")
-        start_ts = time.time()
-
-        # Step 3: Execute POST request (Timeout set to 5 minutes for Cold Starts)
         response = requests.post(OLLAMA_URL, json=payload, timeout=300)
-        response.raise_for_status()
+        data = response.json()
+        
+        # print(f"DEBUG RAW DATA: {data}") 
 
-        # Step 4: Output Tactical Report
-        execution_time = time.time() - start_ts
-        report = response.json().get("response", "Empty response from inference engine.")
+        report = data.get("response", "").strip()
+        exec_time = time.time() - start_ts
 
         print("\n" + "="*60)
-        print(f" TACTICAL INTELLIGENCE REPORT | EXECUTION: {execution_time:.2f}s")
+        print(f" TACTICAL REPORT | EXECUTION: {exec_time:.2f}s")
         print("="*60)
-        print(report)
+        if report:
+            print(report)
+        else:
+            print("[CRITICAL] Model returned an empty string. Memory pressure suspected.")
         print("="*60 + "\n")
 
-    except requests.exceptions.RequestException as req_err:
-        print(f"[CRITICAL] Communication failure with Ollama: {req_err}")
     except Exception as exc:
-        print(f"[CRITICAL] System error during inference: {str(exc)}")
+        print(f"[CRITICAL] Error: {exc}")
 
 if __name__ == "__main__":
     run_tactical_inference()
