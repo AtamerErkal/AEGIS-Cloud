@@ -1,7 +1,7 @@
 # =============================================================================
 # AEGIS-Cloud — Edge Configuration (Production-Ready)
 # =============================================================================
-# File:     edge/config/edge_settings.yaml
+# File:      edge/config/edge_settings.yaml
 # Platform: NVIDIA Jetson Nano (JetPack 5.x)
 #
 # DESIGN PRINCIPLES
@@ -24,7 +24,7 @@ nato_log_format: true          # Enforce NATO Incident Report log lines
 # ---------------------------------------------------------------------------
 inference:
   model_path: "edge/models/yolov8n.pt"        # Ultralytics .pt or .engine
-  confidence_threshold: 0.50                  # Minimum detection confidence
+  confidence_threshold: 0.75                  # [AIOPS FIX] Increased to 0.75 so we don't spam the VLM
   nms_iou_threshold: 0.45                     # Non-max suppression IoU cutoff
   target_classes:                             # Filter: only report these labels
     - "person"
@@ -37,7 +37,7 @@ inference:
   # Simulation sources
   sim_video_path: "data/sim_samples/drone_flyby.mp4"
   sim_fallback_color: [0, 128, 255]           # BGR placeholder frame colour
-  target_fps: 30
+  target_fps: 1                               # [AIOPS FIX] Reduced to 1 FPS to prevent frame queuing while VLM is reasoning
 
 # ---------------------------------------------------------------------------
 # REASONING  (Moondream Multimodal LLM via Ollama)
@@ -50,15 +50,14 @@ inference:
 reasoning:
   ollama_endpoint: "http://localhost:11434"   # Local Ollama server
   model_name: "moondream"                     # Ollama model tag after pull
-  timeout_seconds: 120                        # Jetson Nano cold-start; Moondream loads from swap
+  timeout_seconds: 300                        # [AIOPS FIX] Increased to 300s (5 min) for 4GB Swap Thrashing
   max_retries: 3                              # Circuit-breaker trip threshold
   cooldown_seconds: 120                       # Seconds before circuit-breaker auto-probes Ollama
-  # Moondream uses 378×378 native vision resolution; we pass 336×336 crops
-  # (closest power-of-2-friendly size) — the model handles the difference.
-  image_resize_px: 224                        # Crop size fed to the model
+  # Moondream uses 378x378 native vision resolution; we pass 224x224 crops
+  image_resize_px: 224                        # [AIOPS FIX] Downscaled to 224px for Jetson RAM limits
   options:
     temperature: 0.1                          # Low temp for deterministic tactical output
-    num_predict: 200                          # Max tokens — keep descriptions concise
+    num_predict: 100                          # [AIOPS FIX] Reduced tokens to 100 for faster generation
 
 # ---------------------------------------------------------------------------
 # SENSORS  (Fusion Engine / Driver Interface)
@@ -111,8 +110,8 @@ nato_metadata:
   station_id: "AEGIS-EDGE-001"
   unit_designation: "DIEHL-GARMR-UNIT-1"
   unit_coordinates:                  # WGS-84 placeholders — update on deployment
-    lat: 0.0000
-    lon: 0.0000
-    alt_m: 0.0
+    lat: 48.3984                     # [AIOPS UPDATE] Set to Neu-Ulm, Bavaria
+    lon: 10.0011
+    alt_m: 470.0
   classification_level: "UNCLASSIFIED//FOR TRAINING ONLY"
   reporting_format: "STANAG-4586-STUB"
