@@ -1,0 +1,5 @@
+azure-functions
+langchain
+langchain-openai
+azure-cosmos
+azure-eventgrid

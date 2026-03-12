@@ -24,7 +24,8 @@
             "direction": "out",
             "databaseName": "aegis-decisions",
             "containerName": "threat-assessments",
-            "connectionStringSetting": "COSMOS_DB_CONNECTION"
+            "connectionStringSetting": "COSMOS_DB_CONNECTION",
+            "partitionKey": "/classification"
         }
     ]
 }
