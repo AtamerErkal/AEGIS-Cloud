@@ -163,6 +163,7 @@ class VisionNode:
         self._cfg = self._load_config(Path(config_path))
         self._sim_mode: bool = self._cfg.get("simulation_mode", True)
         self._inf_cfg: dict = self._cfg.get("inference", {})
+        self._cam_cfg: dict = self._cfg.get("camera", {})
         self._aiops_cfg: dict = self._cfg.get("aiops", {})
         self._nato_cfg: dict = self._cfg.get("nato_metadata", {})
 
@@ -264,8 +265,23 @@ class VisionNode:
         self.logger.info("[AEGIS] Model loaded successfully — ACTIVE MODE.")
 
     def _init_capture(self) -> None:
-        """Open video capture: sim file, live camera, or synthetic frames."""
+        """
+        Open video capture source determined by config priority.
+
+        Priority 1 — SIMULATION_MODE=true:
+            Read from ``inference.sim_video_path`` (mp4 loop).
+            Falls back to synthetic placeholder frames if file absent.
+
+        Priority 2 — SIMULATION_MODE=false, camera.use_gstreamer=true:
+            Open the IMX219 CSI camera via nvarguscamerasrc GStreamer pipeline.
+            Falls back to synthetic placeholder frames if pipeline fails to open.
+
+        Priority 3 — SIMULATION_MODE=false, camera.use_gstreamer=false:
+            Hardware camera not yet connected. Fall back to simulation video
+            (preserves CI/CD and hardware-free development workflows).
+        """
         if self._sim_mode:
+            # ── Priority 1: Simulation video file ──────────────────────
             sim_path = self._inf_cfg.get("sim_video_path", "")
             if sim_path and Path(sim_path).exists():
                 self._cap = cv2.VideoCapture(str(sim_path))
@@ -275,20 +291,85 @@ class VisionNode:
                     "[AEGIS] SIMULATION_MODE — sim video not found; "
                     "generating synthetic frames."
                 )
-                self._cap = None   # Will generate placeholder frames
+                self._cap = None  # _next_frame() will generate placeholder frames
+
+        elif self._cam_cfg.get("use_gstreamer", False):
+            # ── Priority 2: Live IMX219 CSI camera via GStreamer ────────
+            pipeline = self._build_gstreamer_pipeline()
+            self.logger.info(f"[AEGIS] LIVE MODE — opening GStreamer pipeline: {pipeline}")
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if cap.isOpened():
+                self._cap = cap
+                self.logger.info(
+                    "[AEGIS] LIVE MODE — GStreamer pipeline OPEN. IMX219 ACTIVE."
+                )
+            else:
+                cap.release()
+                self._cap = None
+                self.logger.warning(
+                    "[AEGIS] LIVE MODE — GStreamer pipeline failed to open. "
+                    "Check IMX219 connection and JetPack nvarguscamerasrc. "
+                    "Falling back to synthetic frames."
+                )
+
         else:
-            # cam_idx = 0
-            # self._cap = cv2.VideoCapture(cam_idx)
-            
-            # [AIOPS FIX] Kameramız olmadığı için gerçek modda dahi simülasyon videosunu kullanalım:
-            sim_path = self._inf_cfg.get("sim_video_path", "data/sim_samples/drone_flyby.mp4")
-            
+            # ── Priority 3: Hardware pending — fall back to sim video ───
+            self.logger.info(
+                "[AEGIS] LIVE MODE — camera.use_gstreamer=false (IMX219 not yet connected). "
+                "Using simulation video as stand-in. "
+                "Set camera.use_gstreamer=true in edge_settings.yaml on camera arrival."
+            )
+            sim_path = self._inf_cfg.get(
+                "sim_video_path", "data/sim_samples/drone_flyby.mp4"
+            )
             if sim_path and Path(sim_path).exists():
                 self._cap = cv2.VideoCapture(str(sim_path))
-                self.logger.info(f"[AEGIS] LIVE MODE — but reading from {sim_path} (No HW Camera)")
+                self.logger.info(
+                    f"[AEGIS] LIVE MODE (pending HW) — reading from: {sim_path}"
+                )
             else:
-                self.logger.warning(f"[AEGIS] LIVE MODE — video {sim_path} completely missing, generating synthetic frame fallback!")
+                self.logger.warning(
+                    f"[AEGIS] LIVE MODE — sim video '{sim_path}' missing. "
+                    "Generating synthetic frame fallback."
+                )
                 self._cap = None
+
+    def _build_gstreamer_pipeline(self) -> str:
+        """
+        Construct the nvarguscamerasrc GStreamer pipeline string for the
+        IMX219 (Sony v2) CSI camera on Jetson Nano (JetPack 5.x).
+
+        Pipeline topology:
+            nvarguscamerasrc → NVMM capture → nvvidconv downscale →
+            videoconvert → BGR appsink
+
+        Returns
+        -------
+        str
+            A GStreamer pipeline string compatible with
+            ``cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)``.
+        """
+        c = self._cam_cfg
+        sensor_id   = c.get("sensor_id", 0)
+        cap_w       = c.get("capture_width", 1920)
+        cap_h       = c.get("capture_height", 1080)
+        out_w       = c.get("output_width", 640)
+        out_h       = c.get("output_height", 360)
+        framerate   = c.get("framerate", 30)
+        flip_method = c.get("flip_method", 0)
+        drop        = "true" if c.get("drop_frames", True) else "false"
+
+        return (
+            f"nvarguscamerasrc sensor-id={sensor_id} ! "
+            f"video/x-raw(memory:NVMM), "
+            f"width={cap_w}, height={cap_h}, "
+            f"format=NV12, framerate={framerate}/1 ! "
+            f"nvvidconv flip-method={flip_method} ! "
+            f"video/x-raw, width={out_w}, height={out_h}, format=BGRx ! "
+            f"videoconvert ! "
+            f"video/x-raw, format=BGR ! "
+            f"appsink drop={drop}"
+        )
 
     # ------------------------------------------------------------------
     # Frame generation
