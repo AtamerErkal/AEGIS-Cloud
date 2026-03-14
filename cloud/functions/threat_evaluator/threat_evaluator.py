@@ -17,12 +17,16 @@ import os
 import re
 from datetime import datetime
 
-import azure.functions as func
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import AzureChatOpenAI
+try:
+    import azure.functions as func
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_openai import AzureChatOpenAI
+    _AZURE_AVAILABLE = True
+except ImportError:
+    _AZURE_AVAILABLE = False
 
 
-def main(telemetryEvent: func.EventGridEvent, assessmentOutput: func.Out[func.Document]):
+def main(telemetryEvent, assessmentOutput):
     logging.info("[AEGIS-CLOUD] Threat Evaluator triggered by Event Grid.")
 
     # ------------------------------------------------------------------
