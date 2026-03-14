@@ -47,8 +47,8 @@ XAI EVIDENCE PACKAGE FORMAT
       "rag_citations":      list[str],  # Source document references
       "model_versions": {
           "yolo":           str,
-          "vanguard":       str,
-          "llava":          str
+          "moondream":      str,
+          "llm":            str
       },
       "human_decision":     str | None  # "approved" | "rejected" | None
   }
@@ -96,7 +96,7 @@ class XAIGenerator:
             Original input frame/features used for inference.
         model_ref : str
             Identifier of the model that produced the output
-            ("yolo", "vanguard", "llava").
+            ("yolo", "moondream", "llm").
 
         Returns
         -------
