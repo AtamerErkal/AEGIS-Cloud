@@ -18,3 +18,4 @@
 {"message_id": 7, "timestamp_utc": "2026-03-10T09:10:54.015Z", "station_id": "AEGIS-EDGE-001", "detection_count": 1, "priority": "HIGH", "trigger_classification": "Hostile", "human_review_required": true, "reasoning_available": false}
 {"message_id": 8, "timestamp_utc": "2026-03-10T09:10:54.061Z", "station_id": "AEGIS-EDGE-001", "detection_count": 1, "priority": "HIGH", "trigger_classification": "Hostile", "human_review_required": true, "reasoning_available": false}
 {"message_id": 9, "timestamp_utc": "2026-03-10T09:10:54.108Z", "station_id": "AEGIS-EDGE-001", "detection_count": 1, "priority": "HIGH", "trigger_classification": "Hostile", "human_review_required": true, "reasoning_available": false}
+{"msg_id": 0, "ts": "2026-03-14T20:30:12.568293+00:00"}

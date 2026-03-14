@@ -32,3 +32,4 @@
 # Article 12 requirements for high-risk AI systems.
 #
 # --- Log entries below this line ---
+2026-03-14T20:30:12.569139+00:00 | PENDING_APPROVAL | vibration_anomaly | cmd_id=cmd-8cba18c7 | value=3.8 | corrective_rpm=5064 | human_decision=AWAITING
