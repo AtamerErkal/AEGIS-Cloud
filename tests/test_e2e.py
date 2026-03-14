@@ -29,6 +29,7 @@ from edge.src.comm.cloud_sync import CloudSync
 from cloud.integrations.rag_context import RAGContext
 from cloud.ops.self_healing_service import SelfHealingService
 from cloud.functions.threat_evaluator.threat_evaluator import _parse_llm_json
+from mlops.compliance.xai_generator import XAIGenerator
 
 _PAYLOAD_PATH = Path("data/logs/cloud_payload.json")
 
@@ -211,6 +212,50 @@ def test_payload_schema():
     print(f"  {PASS} station_id={nato['station_id']}")
 
 
+# ── Test 6: XAI Generator ─────────────────────────────────────────────────
+
+def test_xai_generator():
+    print("\n[TEST 6] XAIGenerator — EU AI Act Article 13/14 compliance")
+
+    xai = XAIGenerator()
+
+    model_output = {"risk_level": "Hostile", "confidence": 0.89, "bbox": [0.3, 0.25, 0.55, 0.45]}
+    input_data   = {"frame_id": "test-frame-1", "bbox": [0.3, 0.25, 0.55, 0.45]}
+
+    evidence = xai.generate_evidence(model_output, input_data, model_ref="yolo")
+
+    # Required fields present
+    from mlops.compliance.xai_generator import _REQUIRED_FIELDS
+    missing = [f for f in _REQUIRED_FIELDS if f not in evidence]
+    assert not missing, f"Missing fields: {missing}"
+    print(f"  {PASS} All required EU AI Act fields present")
+
+    # SHAP stub
+    assert evidence["shap_summary"]["status"] == "stub"
+    assert len(evidence["shap_summary"]["top_features"]) == 5
+    print(f"  {PASS} SHAP stub: {len(evidence['shap_summary']['top_features'])} features")
+
+    # Grad-CAM stub
+    assert evidence["grad_cam"]["status"] == "stub"
+    assert evidence["grad_cam"]["highlight_bbox"] == [0.3, 0.25, 0.55, 0.45]
+    print(f"  {PASS} Grad-CAM stub: bbox={evidence['grad_cam']['highlight_bbox']}")
+
+    # Compliance flag
+    assert evidence["eu_ai_act_compliant"] is True
+    print(f"  {PASS} eu_ai_act_compliant=True")
+
+    # Audit hash present
+    assert len(evidence["audit_hash"]) == 64
+    print(f"  {PASS} audit_hash={evidence['audit_hash'][:16]}...")
+
+    # Audit trail log
+    xai.log_to_audit_trail(evidence, human_decision="APPROVED")
+    assert xai.audit_trail_path.exists()
+    last_line = xai.audit_trail_path.read_text().strip().split("\n")[-1]
+    assert "APPROVED" in last_line
+    print(f"  {PASS} Audit trail updated with human_decision=APPROVED")
+
+
 # ── Runner ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -224,6 +269,7 @@ def main():
         test_rag_context,
         test_self_healing,
         test_payload_schema,
+        test_xai_generator,
     ]
 
     passed, failed = 0, 0

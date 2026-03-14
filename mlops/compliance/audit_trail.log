@@ -33,3 +33,5 @@
 #
 # --- Log entries below this line ---
 2026-03-14T20:30:12.569139+00:00 | PENDING_APPROVAL | vibration_anomaly | cmd_id=cmd-8cba18c7 | value=3.8 | corrective_rpm=5064 | human_decision=AWAITING
+2026-03-14T20:47:19.629401+00:00 | PENDING_APPROVAL | vibration_anomaly | cmd_id=cmd-155be220 | value=3.8 | corrective_rpm=5064 | human_decision=AWAITING
+2026-03-14T20:47:19.629672+00:00 | XAI_EVIDENCE | Hostile | conf=0.89 | compliant=True | shap=stub | grad_cam=stub | audit_hash=65f7eb16bc453ad1... | human_decision=APPROVED
