@@ -6,7 +6,8 @@ Platform: NVIDIA Jetson Nano (JetPack 5.x)
 
 PURPOSE
 -------
-YOLOv8-nano inference engine for real-time drone/target detection.
+YOLOv8-nano inference engine for real-time maritime surface surveillance.
+Mounted on a patrol drone, detects and classifies surface vessels.
 Reads config from ``edge/config/edge_settings.yaml``.
 
 When SIMULATION_MODE=True, reads from a sample video file or generates
@@ -92,13 +93,14 @@ except ImportError:
 CONFIG_PATH = Path("edge/config/edge_settings.yaml")
 NATO_LOG_FMT = "[%(asctime)s] %(message)s"
 
-# Risk classification thresholds — map YOLO class labels to risk levels
+# Maritime risk classification — initial level assigned by YOLO size heuristic.
+# Moondream VLM upgrades "Unknown" vessels to "Hostile" (warship/patrol) or
+# "Friendly" (civilian cargo/fishing) after visual analysis.
 _RISK_MAP: dict[str, str] = {
-    "drone":   "Hostile",
-    "person":  "Unknown",
-    "vehicle": "Unknown",
-    "ship":    "Unknown",   # Maritime target — requires Moondream evaluation to upgrade
-    "boat":    "Unknown",
+    "warship":      "Hostile",   # Military vessel — Moondream-confirmed
+    "patrol_boat":  "Hostile",   # Fast-attack / patrol — Moondream-confirmed
+    "ship":         "Unknown",   # Large surface vessel — pending Moondream eval
+    "boat":         "Unknown",   # Small vessel — pending Moondream eval
 }
 
 
