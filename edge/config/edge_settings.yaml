@@ -37,7 +37,7 @@ inference:
   grad_cam_enabled: true                      # XAI: generate heatmap stubs
   grad_cam_trigger: "Hostile"                 # Only generate for risk level
   # Simulation sources
-  sim_video_path: "data/sim_samples/test_video.mp4"
+  sim_video_path: "data/videos/test_drone.mp4"
   sim_fallback_color: [0, 128, 255]           # BGR placeholder frame colour
   target_fps: 5                               # 5 FPS for video file scanning (faster than live reasoning mode)
   # Best-frame selection: accumulate detections over a window, snapshot the peak frame
@@ -106,6 +106,33 @@ cloud_sync:
   retry_backoff_base_seconds: 2
   sim_output_path: "data/logs/sim_cloud_sync.jsonl"
   sim_commands_path: "data/sim_samples/c2d_commands.json"
+
+# ---------------------------------------------------------------------------
+# SERVO / PAN-TILT GIMBAL  (PCA9685 — pan channel 0, tilt channel 1)
+# ---------------------------------------------------------------------------
+# Set simulation_mode: false AND wire PCA9685 to I²C bus 1 (addr 0x40)
+# to activate real servo control.  In simulation mode all angle commands
+# are logged but no I²C writes are issued.
+#
+# PD Tuning guide:
+#   kp  — increase for faster response, decrease if oscillating
+#   kd  — increase to dampen overshoot
+#   deadzone_norm — fraction of frame width/height treated as "on target"
+#                   (0.03 = target within ±3 % of centre → no movement)
+# ---------------------------------------------------------------------------
+servo:
+  i2c_address: 0x40             # PCA9685 default I²C address
+  frequency_hz: 50              # Standard RC servo PWM frequency
+  pan_channel: 0                # PCA9685 output channel for pan servo
+  tilt_channel: 1               # PCA9685 output channel for tilt servo
+  pan_center_deg: 90.0          # Absolute home angle for pan  (0–180°)
+  tilt_center_deg: 90.0         # Absolute home angle for tilt (0–180°)
+  pan_range_deg: [-90, 90]      # Offset limits from pan_center_deg
+  tilt_range_deg: [-45, 45]     # Offset limits from tilt_center_deg
+  pid:
+    kp: 0.4                     # Proportional gain (degrees per normalised error)
+    kd: 0.05                    # Derivative gain
+    deadzone_norm: 0.03         # ±3 % of frame — no servo movement below this
 
 # ---------------------------------------------------------------------------
 # MOTOR / PLATFORM  (Self-Healing Targets — consumed by Cloud)

@@ -55,6 +55,7 @@ import yaml
 if TYPE_CHECKING:
     from edge.src.perception.reasoning_node import ReasoningNode
     from edge.src.comm.cloud_sync import CloudSync
+    from edge.src.sensors.servo_driver import PanTiltServoDriver
 
 # ---------------------------------------------------------------------------
 # Optional heavy imports — graceful degradation when not on Jetson
@@ -404,6 +405,7 @@ class VisionNode:
         config_path: Path | str = CONFIG_PATH,
         reasoning_node: "ReasoningNode | None" = None,
         cloud_sync: "CloudSync | None" = None,
+        servo_node: "PanTiltServoDriver | None" = None,
     ) -> None:
         print("[DEBUG] 1. Config loading...")
         self._cfg = self._load_config(Path(config_path))
@@ -426,6 +428,7 @@ class VisionNode:
         # Optional integration components
         self._reasoning: "ReasoningNode | None" = reasoning_node
         self._cloud: "CloudSync | None" = cloud_sync
+        self._servo: "PanTiltServoDriver | None" = servo_node
 
         # Configure logger
         log_level = getattr(logging, self._cfg.get("log_level", "INFO").upper(), logging.INFO)
@@ -897,6 +900,22 @@ class VisionNode:
 
                 detections = self.detect(frame)
                 self._frame_id += 1
+
+                # --- PAN-TILT SERVO TRACKING ---
+                # Steer the gimbal toward the highest-confidence detection.
+                # Falls back to center() when no targets are visible so the
+                # platform returns to search position automatically.
+                if self._servo is not None:
+                    if detections:
+                        best_det = max(detections, key=lambda d: d.confidence)
+                        pan_deg, tilt_deg = self._servo.track(best_det.bbox)
+                        self.logger.debug(
+                            "[SERVO] tracking %s conf=%.2f → pan=%.1f° tilt=%.1f°",
+                            best_det.target_type, best_det.confidence,
+                            pan_deg, tilt_deg,
+                        )
+                    else:
+                        self._servo.center()
 
                 # --- BEST-FRAME SELECTION ---
                 # Feed every frame into BestFrameSelector. When the window expires
