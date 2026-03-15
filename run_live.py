@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 """
-AEGIS-Cloud — Live Tracking Pipeline
+AEGIS-Cloud - Live Tracking Pipeline
 ======================================
 Real video -> YOLOv8 detection -> PCA9685 servo tracking
 Displays a full tactical overlay on the connected screen.
