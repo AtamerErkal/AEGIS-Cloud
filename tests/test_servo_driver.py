@@ -1,8 +1,8 @@
 """
-AEGIS-Cloud — Servo Driver Unit Test
-=====================================
-Simülasyon modunda PanTiltServoDriver'ı test eder.
-Donanım gerekmez — PCA9685 olmadan çalışır.
+AEGIS-Cloud — Servo Driver Unit Tests
+======================================
+Tests PanTiltServoDriver in simulation mode.
+No hardware required — runs without PCA9685.
 
 Run:
     python tests/test_servo_driver.py
@@ -15,10 +15,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from edge.src.sensors.servo_driver import PanTiltServoDriver
 
-PASS = "\033[92m✓\033[0m"
-FAIL = "\033[91m✗\033[0m"
+PASS = "\033[92m[PASS]\033[0m"
+FAIL = "\033[91m[FAIL]\033[0m"
 
-# Simülasyon config — donanım yok
+# Simulation config — no hardware
 CFG = {
     "simulation_mode": True,
     "servo": {
@@ -35,15 +35,15 @@ CFG = {
 }
 
 
-def _ok(name, condition):
+def _ok(label, condition):
     status = PASS if condition else FAIL
-    print(f"  {status} {name}")
+    print(f"  {status} {label}")
     return condition
 
 
 def test_center():
-    """center() sonrası açılar home değerinde olmalı."""
-    print("\n[TEST 1] center() — home pozisyonu")
+    """After center(), angles must equal home values."""
+    print("\n[TEST 1] center() — home position")
     d = PanTiltServoDriver(CFG)
     d.center()
     s = d.read()
@@ -53,92 +53,89 @@ def test_center():
 
 
 def test_track_right():
-    """Hedef sağda (cx > 0.5) → pan artmalı (sağa dönmeli)."""
-    print("\n[TEST 2] track() — hedef sağ tarafta")
+    """Target right of centre (cx > 0.5) -> pan must increase."""
+    print("\n[TEST 2] track() — target on the right")
     d = PanTiltServoDriver(CFG)
     d.center()
     pan_before = d.read()["pan_deg"]
-    # bbox: [x1, y1, x2, y2] — merkez x = 0.7 → sağda
+    # bbox centre x = 0.7 -> right of frame
     d.track([0.6, 0.4, 0.8, 0.6])
     pan_after = d.read()["pan_deg"]
-    return _ok(f"pan arttı ({pan_before:.1f}° → {pan_after:.1f}°)", pan_after > pan_before)
+    return _ok(f"pan increased ({pan_before:.1f} -> {pan_after:.1f})", pan_after > pan_before)
 
 
 def test_track_left():
-    """Hedef solda (cx < 0.5) → pan azalmalı (sola dönmeli)."""
-    print("\n[TEST 3] track() — hedef sol tarafta")
+    """Target left of centre (cx < 0.5) -> pan must decrease."""
+    print("\n[TEST 3] track() — target on the left")
     d = PanTiltServoDriver(CFG)
     d.center()
     pan_before = d.read()["pan_deg"]
-    # bbox merkez x = 0.2 → solda
+    # bbox centre x = 0.2 -> left of frame
     d.track([0.1, 0.4, 0.3, 0.6])
     pan_after = d.read()["pan_deg"]
-    return _ok(f"pan azaldı ({pan_before:.1f}° → {pan_after:.1f}°)", pan_after < pan_before)
+    return _ok(f"pan decreased ({pan_before:.1f} -> {pan_after:.1f})", pan_after < pan_before)
 
 
 def test_track_deadzone():
-    """Hedef tam merkezde → deadzone içinde, açı değişmemeli."""
-    print("\n[TEST 4] track() — deadzone (merkeze yakın hedef)")
+    """Target at frame centre -> inside deadzone, angles must not change."""
+    print("\n[TEST 4] track() — deadzone (target near centre)")
     d = PanTiltServoDriver(CFG)
     d.center()
-    pan_before = d.read()["pan_deg"]
+    pan_before  = d.read()["pan_deg"]
     tilt_before = d.read()["tilt_deg"]
-    # bbox merkez = (0.50, 0.50) → tam centre
+    # bbox centre = (0.50, 0.50) -> exactly on centre
     d.track([0.45, 0.45, 0.55, 0.55])
     s = d.read()
-    ok1 = _ok(f"pan değişmedi ({s['pan_deg']:.1f}°)",  s["pan_deg"]  == pan_before)
-    ok2 = _ok(f"tilt değişmedi ({s['tilt_deg']:.1f}°)", s["tilt_deg"] == tilt_before)
+    ok1 = _ok(f"pan unchanged ({s['pan_deg']:.1f})",  s["pan_deg"]  == pan_before)
+    ok2 = _ok(f"tilt unchanged ({s['tilt_deg']:.1f})", s["tilt_deg"] == tilt_before)
     return ok1 and ok2
 
 
 def test_angle_clamp():
-    """Aşırı büyük hata → açı sınır değerini geçmemeli."""
-    print("\n[TEST 5] angle clamp — sınırlar aşılmamalı")
+    """Extreme error -> angle must not exceed configured limit."""
+    print("\n[TEST 5] angle clamp — limits must not be exceeded")
     d = PanTiltServoDriver(CFG)
-    # 50 adım en sağa doğru it
+    # Push hard right 50 times
     for _ in range(50):
         d.track([0.9, 0.5, 1.0, 0.6])
     s = d.read()
     pan_max = CFG["servo"]["pan_center_deg"] + CFG["servo"]["pan_range_deg"][1]  # 180
-    return _ok(f"pan <= {pan_max}° (gerçek: {s['pan_deg']:.1f}°)", s["pan_deg"] <= pan_max)
+    return _ok(f"pan <= {pan_max} (actual: {s['pan_deg']:.1f})", s["pan_deg"] <= pan_max)
 
 
 def test_self_test():
     """
-    Gerçek donanım self_test() — PCA9685 bağlıysa fiziksel sweep yapar.
+    Hardware self_test() — performs a physical sweep if PCA9685 is connected.
 
-    Durum 1 — adafruit-servokit kurulu DEĞİL veya PCA9685 bağlı DEĞİL:
-        Driver otomatik olarak simülasyona düşer → self_test() True döner.
-        Nano'ya bağlanmadan CI/CD'de de geçer.
+    Case 1 — adafruit-servokit not installed or PCA9685 not connected:
+        Driver falls back to simulation automatically -> self_test() returns True.
+        Passes in CI/CD without any hardware.
 
-    Durum 2 — PCA9685 I²C'de mevcut (Nano + bağlı donanım):
-        Gerçek ±15° sweep testi yapılır → self_test() True döner.
-        Servo kablolarını kontrol et: VCC, GND, SDA, SCL.
+    Case 2 — PCA9685 present on I2C (Nano + connected hardware):
+        Real +/-15 degree sweep is performed -> self_test() returns True.
+        Check servo wiring: VCC, GND, SDA, SCL.
     """
-    print("\n[TEST 6] self_test() — gerçek donanım (simulation_mode=False)")
+    print("\n[TEST 6] self_test() — hardware (simulation_mode=False)")
 
-    hw_cfg = {**CFG, "simulation_mode": False}  # donanım modu
+    hw_cfg = {**CFG, "simulation_mode": False}
     d = PanTiltServoDriver(hw_cfg)
 
     if d._sim:
-        # Kütüphane yok veya I²C init başarısız → sim'e düştü
-        print("    ℹ  adafruit-servokit yok veya PCA9685 bağlı değil → sim fallback")
+        print("    [INFO] adafruit-servokit missing or PCA9685 not found -> sim fallback")
         return _ok("self_test() == True (sim fallback)", d.self_test() is True)
     else:
-        # Gerçek donanım — fiziksel sweep
-        print("    ⚙  PCA9685 bağlandı → fiziksel sweep testi")
-        result = d.self_test()
-        return _ok(f"self_test() == True (hardware)", result is True)
+        print("    [INFO] PCA9685 connected -> physical sweep test")
+        return _ok("self_test() == True (hardware)", d.self_test() is True)
 
 
 def test_read_keys():
-    """read() doğru anahtarları içermeli."""
-    print("\n[TEST 7] read() — dönen dict yapısı")
+    """read() must return a dict with the expected keys."""
+    print("\n[TEST 7] read() — return dict structure")
     d = PanTiltServoDriver(CFG)
     s = d.read()
-    ok1 = _ok("'pan_deg' anahtarı var",          "pan_deg"          in s)
-    ok2 = _ok("'tilt_deg' anahtarı var",         "tilt_deg"         in s)
-    ok3 = _ok("'servo_fail_count' anahtarı var", "servo_fail_count" in s)
+    ok1 = _ok("'pan_deg' key present",          "pan_deg"          in s)
+    ok2 = _ok("'tilt_deg' key present",         "tilt_deg"         in s)
+    ok3 = _ok("'servo_fail_count' key present", "servo_fail_count" in s)
     return ok1 and ok2 and ok3
 
 
@@ -154,10 +151,10 @@ if __name__ == "__main__":
     ]
 
     results = [t() for t in tests]
-    passed = sum(results)
-    total  = len(results)
+    passed  = sum(results)
+    total   = len(results)
 
     print(f"\n{'='*50}")
-    print(f"  Sonuç: {passed}/{total} test geçti")
+    print(f"  Result: {passed}/{total} tests passed")
     print(f"{'='*50}")
     sys.exit(0 if passed == total else 1)
