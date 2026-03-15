@@ -32,19 +32,41 @@ except Exception as e:
     print(f"[SERVO] PCA9685 not found — angles will be logged only ({e})")
 
 # ── YOLOv8 ───────────────────────────────────────────────────────────────────
+# COCO-80 has no "drone" class; remap visually similar aerial objects
+_DRONE_ALIASES = {"airplane": "drone", "kite": "drone"}
+
+MODEL_OK = False
+_model   = None
+_backend = "Mock"
+
+# Prefer ONNX Runtime — no PyTorch/CUDA dependency, faster on Nano CPU
 try:
-    from ultralytics import YOLO
-    _model_path = Path("edge/models/yolov8n.pt")
-    if not _model_path.exists():
-        _model_path.parent.mkdir(parents=True, exist_ok=True)
-        print("[MODEL] Downloading yolov8n.pt ...")
-    _model = YOLO(str(_model_path))
+    import onnxruntime as _ort  # noqa: F401
+    from edge.src.perception.vision_node import _OnnxModel
+    _onnx_path = Path("edge/models/yolov8n.onnx")
+    if not _onnx_path.exists():
+        raise FileNotFoundError(f"{_onnx_path} not found")
+    _model   = _OnnxModel(str(_onnx_path))
     MODEL_OK = True
-    print("[MODEL] YOLOv8 loaded")
-except Exception as e:
-    MODEL_OK = False
-    _model = None
-    print(f"[MODEL] YOLOv8 unavailable — mock detections active ({e})")
+    _backend = "ONNX"
+    print(f"[MODEL] YOLOv8 ONNX loaded  providers={_model._sess.get_providers()}")
+except Exception as _e_onnx:
+    print(f"[MODEL] ONNX unavailable ({_e_onnx}) — trying PyTorch …")
+
+# Fallback: ultralytics PyTorch
+if not MODEL_OK:
+    try:
+        from ultralytics import YOLO
+        _model_path = Path("edge/models/yolov8n.pt")
+        if not _model_path.exists():
+            _model_path.parent.mkdir(parents=True, exist_ok=True)
+            print("[MODEL] Downloading yolov8n.pt ...")
+        _model   = YOLO(str(_model_path))
+        MODEL_OK = True
+        _backend = "PyTorch"
+        print("[MODEL] YOLOv8 PyTorch loaded")
+    except Exception as e:
+        print(f"[MODEL] YOLOv8 unavailable — mock detections active ({e})")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -131,7 +153,8 @@ def detect(frame: np.ndarray, frame_id: int) -> list:
         out = []
         for r in results:
             for box in r.boxes:
-                cls_name = r.names[int(box.cls.item())].lower()
+                raw_cls  = r.names[int(box.cls.item())].lower()
+                cls_name = _DRONE_ALIASES.get(raw_cls, raw_cls)
                 if cls_name not in TARGET_CLASSES:
                     continue
                 out.append((cls_name, float(box.conf.item()), box.xyxyn.tolist()[0]))
@@ -216,7 +239,7 @@ def draw_overlay(frame: np.ndarray,
     cv2.rectangle(overlay2, (0, bar_y - 5), (w, h), C_DARK, -1)
     cv2.addWeighted(overlay2, 0.6, out, 0.4, 0, out)
 
-    model_str = "YOLOv8n" if MODEL_OK else "MOCK"
+    model_str = f"YOLOv8n[{_backend}]" if MODEL_OK else "MOCK"
     if best_det:
         cls_name, conf, bbox = best_det
         cx_t = (bbox[0] + bbox[2]) / 2
@@ -279,7 +302,7 @@ def main():
     print("\n" + "=" * 60)
     print("  AEGIS — Live Tracking Pipeline")
     print(f"  Source : {label}")
-    print(f"  Model  : {'YOLOv8n' if MODEL_OK else 'Mock detections'}")
+    print(f"  Model  : {'YOLOv8n [' + _backend + ']' if MODEL_OK else 'Mock detections'}")
     print(f"  Servo  : {'PCA9685 ACTIVE' if SERVO_OK else 'Simulation (log only)'}")
     print("  Stop   : press Q in the window or Ctrl+C")
     print("=" * 60 + "\n")
