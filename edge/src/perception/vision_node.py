@@ -79,6 +79,12 @@ try:
 except Exception:
     _GPU_AVAILABLE = False
 
+try:
+    import onnxruntime as _ort  # noqa: F401
+    _ONNX_AVAILABLE = True
+except ImportError:
+    _ONNX_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -93,6 +99,192 @@ _RISK_MAP: dict[str, str] = {
     "ship":    "Unknown",   # Maritime target — requires Moondream evaluation to upgrade
     "boat":    "Unknown",
 }
+
+
+# ---------------------------------------------------------------------------
+# ONNX Inference Backend  (no PyTorch / ultralytics required)
+# ---------------------------------------------------------------------------
+
+class _OnnxBox:
+    """Mirrors the ultralytics ``Boxes`` attribute API used in _run_inference."""
+
+    def __init__(self, cls_id: int, conf: float, xyxyn: list) -> None:
+        self._cls_id = cls_id
+        self._conf   = conf
+        self._xyxyn  = xyxyn
+
+    class _Val:
+        def __init__(self, v: Any) -> None: self._v = v
+        def item(self) -> Any: return self._v
+
+    class _Coords:
+        def __init__(self, c: list) -> None: self._c = c
+        def tolist(self) -> list: return [self._c]
+
+    @property
+    def cls(self) -> "_OnnxBox._Val":    return self._Val(self._cls_id)
+    @property
+    def conf(self) -> "_OnnxBox._Val":   return self._Val(self._conf)
+    @property
+    def xyxyn(self) -> "_OnnxBox._Coords": return self._Coords(self._xyxyn)
+
+
+class _OnnxResult:
+    """Mirrors an ultralytics ``Results`` object."""
+
+    def __init__(self, boxes: list, names: dict) -> None:
+        self.boxes = boxes
+        self.names = names
+
+
+class _OnnxModel:
+    """
+    Lightweight YOLOv8 ONNX inference engine — no PyTorch required.
+
+    Supports any YOLOv8 ONNX export (opset 12+).
+    Input:  ``images``  → (1, 3, imgsz, imgsz) float32
+    Output: ``output0`` → (1, 4+nc, 8400) float32
+    """
+
+    # COCO-80 class names (fallback if model metadata absent)
+    _COCO: dict = {
+        0: "person",      1: "bicycle",     2: "car",           3: "motorcycle",
+        4: "airplane",    5: "bus",         6: "train",         7: "truck",
+        8: "boat",        9: "traffic light", 10: "fire hydrant", 11: "stop sign",
+        12: "parking meter", 13: "bench",   14: "bird",         15: "cat",
+        16: "dog",        17: "horse",      18: "sheep",        19: "cow",
+        20: "elephant",   21: "bear",       22: "zebra",        23: "giraffe",
+        24: "backpack",   25: "umbrella",   26: "handbag",      27: "tie",
+        28: "suitcase",   29: "frisbee",    30: "skis",         31: "snowboard",
+        32: "sports ball", 33: "kite",      34: "baseball bat", 35: "baseball glove",
+        36: "skateboard", 37: "surfboard",  38: "tennis racket", 39: "bottle",
+        40: "wine glass", 41: "cup",        42: "fork",         43: "knife",
+        44: "spoon",      45: "bowl",       46: "banana",       47: "apple",
+        48: "sandwich",   49: "orange",     50: "broccoli",     51: "carrot",
+        52: "hot dog",    53: "pizza",      54: "donut",        55: "cake",
+        56: "chair",      57: "couch",      58: "potted plant", 59: "bed",
+        60: "dining table", 61: "toilet",   62: "tv",           63: "laptop",
+        64: "mouse",      65: "remote",     66: "keyboard",     67: "cell phone",
+        68: "microwave",  69: "oven",       70: "toaster",      71: "sink",
+        72: "refrigerator", 73: "book",     74: "clock",        75: "vase",
+        76: "scissors",   77: "teddy bear", 78: "hair drier",   79: "toothbrush",
+    }
+    # Map COCO names → AEGIS canonical target names
+    _ALIASES: dict = {
+        "car": "vehicle", "motorcycle": "vehicle",
+        "bus": "vehicle", "truck": "vehicle",
+    }
+
+    def __init__(
+        self,
+        model_path: str,
+        imgsz: int = 640,
+        iou_threshold: float = 0.45,
+    ) -> None:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3  # suppress verbose logs
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self._sess       = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+        self._input_name = self._sess.get_inputs()[0].name
+        self._imgsz      = imgsz
+        self._iou        = iou_threshold
+
+        # Read class names from ONNX model metadata; fall back to COCO
+        meta = self._sess.get_modelmeta().custom_metadata_map
+        if "names" in meta:
+            import ast
+            raw: dict = ast.literal_eval(meta["names"])
+            base: dict = {int(k): str(v) for k, v in raw.items()}
+        else:
+            base = dict(self._COCO)
+        self.names: dict = {k: self._ALIASES.get(v, v) for k, v in base.items()}
+
+    # ------------------------------------------------------------------
+
+    def predict(
+        self,
+        source: "np.ndarray",
+        conf: float = 0.25,
+        verbose: bool = True,
+    ) -> list:
+        blob, pad_w, pad_h, new_w, new_h = self._letterbox(source)
+        outputs = self._sess.run(None, {self._input_name: blob})
+        boxes   = self._postprocess(outputs[0], conf, pad_w, pad_h, new_w, new_h)
+        return [_OnnxResult(boxes, self.names)]
+
+    def _letterbox(self, img: "np.ndarray") -> tuple:
+        """Letterbox-resize to (imgsz × imgsz); return blob + padding info."""
+        h, w   = img.shape[:2]
+        scale  = self._imgsz / max(h, w)
+        new_h  = int(h * scale)
+        new_w  = int(w * scale)
+        pad_h  = (self._imgsz - new_h) // 2
+        pad_w  = (self._imgsz - new_w) // 2
+        canvas = np.full((self._imgsz, self._imgsz, 3), 114, dtype=np.uint8)
+        canvas[pad_h: pad_h + new_h, pad_w: pad_w + new_w] = cv2.resize(img, (new_w, new_h))
+        blob   = (canvas[:, :, ::-1].astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis]
+        return blob, pad_w, pad_h, new_w, new_h
+
+    def _postprocess(
+        self,
+        pred: "np.ndarray",
+        conf_thresh: float,
+        pad_w: int,
+        pad_h: int,
+        new_w: int,
+        new_h: int,
+    ) -> list:
+        """Decode YOLOv8 raw output → list of _OnnxBox (normalised xyxy)."""
+        rows      = pred[0].T                       # (8400, 4+nc)
+        bxywh     = rows[:, :4]
+        cls_scores = rows[:, 4:]
+        confs     = cls_scores.max(axis=1)
+        cls_ids   = cls_scores.argmax(axis=1)
+
+        mask = confs >= conf_thresh
+        if not mask.any():
+            return []
+        bxywh, confs, cls_ids = bxywh[mask], confs[mask], cls_ids[mask]
+
+        # cx, cy, w, h → x1, y1, x2, y2  (letterboxed 640-px space)
+        x1 = bxywh[:, 0] - bxywh[:, 2] / 2
+        y1 = bxywh[:, 1] - bxywh[:, 3] / 2
+        x2 = bxywh[:, 0] + bxywh[:, 2] / 2
+        y2 = bxywh[:, 1] + bxywh[:, 3] / 2
+
+        keep = self._nms(np.stack([x1, y1, x2, y2], axis=1), confs, self._iou)
+
+        results: list = []
+        for i in keep:
+            # Undo letterbox padding → normalise to original image dims
+            nx1 = float(np.clip((x1[i] - pad_w) / new_w, 0.0, 1.0))
+            ny1 = float(np.clip((y1[i] - pad_h) / new_h, 0.0, 1.0))
+            nx2 = float(np.clip((x2[i] - pad_w) / new_w, 0.0, 1.0))
+            ny2 = float(np.clip((y2[i] - pad_h) / new_h, 0.0, 1.0))
+            results.append(_OnnxBox(int(cls_ids[i]), float(confs[i]), [nx1, ny1, nx2, ny2]))
+        return results
+
+    @staticmethod
+    def _nms(boxes: "np.ndarray", scores: "np.ndarray", iou_threshold: float = 0.45) -> list:
+        """Greedy NMS — pure NumPy, no torchvision required."""
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep: list = []
+        while order.size:
+            i = int(order[0])
+            keep.append(i)
+            if order.size == 1:
+                break
+            ix1 = np.maximum(x1[i], x1[order[1:]])
+            iy1 = np.maximum(y1[i], y1[order[1:]])
+            ix2 = np.minimum(x2[i], x2[order[1:]])
+            iy2 = np.minimum(y2[i], y2[order[1:]])
+            inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
+            iou   = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
+            order = order[1:][iou <= iou_threshold]
+        return keep
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +509,21 @@ class VisionNode:
                     "Falling back to mock detections — check internet connectivity."
                 )
                 return
+
+        # ONNX path — no PyTorch/ultralytics required
+        if model_path.suffix == ".onnx":
+            if not _ONNX_AVAILABLE:
+                self.logger.warning(
+                    "[AEGIS] onnxruntime not installed — cannot load .onnx model. "
+                    "Install with: pip install onnxruntime"
+                )
+                return
+            iou   = float(self._inf_cfg.get("nms_iou_threshold", 0.45))
+            imgsz = int(self._inf_cfg.get("image_size", 640))
+            self.logger.info(f"[AEGIS] Loading ONNX model: {model_path}")
+            self._model = _OnnxModel(str(model_path), imgsz=imgsz, iou_threshold=iou)
+            self.logger.info("[AEGIS] ONNX model loaded — ACTIVE MODE (no PyTorch).")
+            return
 
         device = self._inf_cfg.get("device", "cpu")
         self.logger.info(f"[AEGIS] Loading YOLOv8 model: {model_path}  device={device}")

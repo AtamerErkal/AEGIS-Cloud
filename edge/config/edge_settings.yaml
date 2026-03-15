@@ -23,7 +23,7 @@ nato_log_format: true          # Enforce NATO Incident Report log lines
 # INFERENCE  (YOLOv8 Vision Node)
 # ---------------------------------------------------------------------------
 inference:
-  model_path: "edge/models/yolov8n.pt"    # Ultralytics .pt or .engine
+  model_path: "edge/models/yolov8n.onnx"  # ONNX backend (no PyTorch) | swap to .pt for ultralytics
   nms_iou_threshold: 0.45                     # Non-max suppression IoU cutoff
   target_classes:                             # Filter: only report these labels
     - "person"
