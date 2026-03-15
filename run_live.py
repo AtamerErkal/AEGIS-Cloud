@@ -336,7 +336,7 @@ def main():
     src = parser.add_mutually_exclusive_group()
     src.add_argument("--camera",    type=int,  help="Webcam index (e.g. 0)")
     src.add_argument("--video",     type=Path,
-                     default=Path("data/sim_samples/drone_flyby.mp4"))
+                     default=Path("data/sim_samples/maritime_sim.mp4"))
     src.add_argument("--gstreamer", action="store_true")
     parser.add_argument("--headless", action="store_true",
                         help="Disable GUI window (no display needed)")
