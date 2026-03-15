@@ -270,6 +270,8 @@ def main():
     src.add_argument("--video",     type=Path,
                      default=Path("data/sim_samples/drone_flyby.mp4"))
     src.add_argument("--gstreamer", action="store_true")
+    parser.add_argument("--headless", action="store_true",
+                        help="Disable GUI window (no display needed)")
     args = parser.parse_args()
 
     cap, label = open_capture(args)
@@ -318,7 +320,8 @@ def main():
             # ── Step 4: Draw & display ────────────────────────────────────
             out = draw_overlay(frame, detections, mode,
                                pan_deg, tilt_deg, fps, frame_id)
-            cv2.imshow("AEGIS  |  Live Tracking", out)
+            if not args.headless:
+                cv2.imshow("AEGIS  |  Live Tracking", out)
 
             # ── Step 5: Terminal log ──────────────────────────────────────
             if detections:
@@ -336,7 +339,7 @@ def main():
                     f"{(time.perf_counter()-t0)*1000:.0f}ms"
                 )
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            if not args.headless and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
             frame_id += 1
