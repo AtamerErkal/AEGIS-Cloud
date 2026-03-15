@@ -45,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="AEGIS Edge Video Test")
     p.add_argument(
         "--video",
-        default="data/sim_samples/test_video.mp4",
-        help="Path to test video file (default: data/sim_samples/test_video.mp4)",
+        default="data/videos/test_drone.mp4",
+        help="Path to test video file (default: data/videos/test_drone.mp4)",
     )
     p.add_argument(
         "--fps",
@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--conf",
         type=float,
-        default=0.45,
-        help="YOLO confidence threshold (default: 0.45)",
+        default=0.30,
+        help="YOLO confidence threshold (default: 0.30 — lowered for maritime/ship targets)",
     )
     p.add_argument(
         "--moondream",
@@ -124,7 +124,7 @@ def main() -> None:
     if not video_path.exists():
         print(f"\n[ERROR] Video not found: {video_path}")
         print("\nTransfer it from Windows (PowerShell):")
-        print(f"  scp {video_path.name} atamer@<jetson-ip>:~/aegis_project/{video_path}")
+        print(f"  scp test_drone.mp4 atamer@<jetson-ip>:~/aegis_project/data/videos/test_drone.mp4")
         print("\nOr generate a synthetic test video:")
         print("  python -c \"")
         print("    import cv2, numpy as np")

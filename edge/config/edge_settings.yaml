@@ -37,7 +37,7 @@ inference:
   grad_cam_enabled: true                      # XAI: generate heatmap stubs
   grad_cam_trigger: "Hostile"                 # Only generate for risk level
   # Simulation sources
-  sim_video_path: "data/sim_samples/test_video.mp4"
+  sim_video_path: "data/videos/test_drone.mp4"
   sim_fallback_color: [0, 128, 255]           # BGR placeholder frame colour
   target_fps: 5                               # 5 FPS for video file scanning (faster than live reasoning mode)
   # Best-frame selection: accumulate detections over a window, snapshot the peak frame
