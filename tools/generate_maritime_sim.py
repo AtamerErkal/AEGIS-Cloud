@@ -1,23 +1,18 @@
 """
 AEGIS-Cloud — Maritime Simulation Video Generator
 ===================================================
-Generates a synthetic sea-surface patrol video for testing the
-maritime surveillance pipeline without real hardware.
+Realistic drone gimbal surveillance simulation.
 
-Scene:
-  - Animated sea surface (gradient + wave texture)
-  - 2 civilian vessels (brown/white, small-medium)
-  - 1 military warship (grey, large, with mast and radar)
-  - Drone gimbal: dynamic pan/tilt scan
-  - FOV search area moves IN SYNC with pan/tilt servos
-  - When warship is detected → camera locks on and tracks it
+Camera model (mirrors real pan-tilt gimbal):
+  - Scene is a wide panoramic view of the sea.  Vessels move across it.
+  - pan/tilt angles control a SMALL FOV window (camera's actual field of view).
+  - During SEARCH the gimbal sweeps a raster pattern (left→right, step down,
+    right→left, step down …) — like a real search scan.
+  - When a military vessel enters the FOV → TRACKING mode: gimbal locks on
+    and smoothly follows the target, keeping it centred.
 
-Camera model:
-  - The scene (sea + vessels) is static on screen.
-  - pan/tilt angles control WHERE the FOV trapezoid is drawn.
-  - pan 90° = FOV centred; pan 55° = FOV left; pan 125° = FOV right.
-  - Detection = vessel inside the moving FOV trapezoid AND visible on screen.
-  - Tracking = once warship detected, pan/tilt smoothly follows it.
+Key principle: the green "SEARCH AREA" box on screen IS where the camera is
+looking.  It moves exactly with the pan/tilt values shown in the HUD.
 
 Output: data/sim_samples/maritime_sim.mp4
 """
@@ -32,83 +27,37 @@ import numpy as np
 OUT_PATH = Path("data/sim_samples/maritime_sim.mp4")
 W, H     = 1280, 720
 FPS      = 25
-DURATION = 20          # seconds  (search ~6s → detection → tracking ~14s)
+DURATION = 18          # seconds
 N_FRAMES = FPS * DURATION
 
 OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 writer = cv2.VideoWriter(str(OUT_PATH), fourcc, FPS, (W, H))
 
-# ── Sea background helpers ────────────────────────────────────────────────────
-_RNG  = np.random.default_rng(42)
-SKY_H = int(H * 0.40)   # y coordinate of horizon line
+# ── Sea ───────────────────────────────────────────────────────────────────────
+SKY_H = int(H * 0.38)
 
 
 def make_sea(frame_idx: int) -> np.ndarray:
-    """Animated sea surface — gradient + ripple noise."""
     base = np.zeros((H, W, 3), dtype=np.uint8)
-
     for y in range(SKY_H):
         t = y / SKY_H
         base[y, :] = (int(180 + 50 * t), int(140 + 40 * t), int(100 + 40 * t))
-
     for y in range(SKY_H, H):
         t = (y - SKY_H) / (H - SKY_H)
         base[y, :] = (int(80 + 40 * t), int(50 + 30 * t), int(20 + 10 * t))
-
     phase = frame_idx * 0.08
     for row_off in range(0, H - SKY_H, 18):
         y = SKY_H + row_off
         if y >= H:
             break
-        amplitude = 1.5 + row_off * 0.003
+        amp = 1.5 + row_off * 0.003
         for x in range(0, W, 2):
-            dy  = int(amplitude * math.sin(x * 0.02 + phase + row_off * 0.1))
-            wy  = min(H - 1, max(0, y + dy))
+            dy = int(amp * math.sin(x * 0.02 + phase + row_off * 0.1))
+            wy = min(H - 1, max(0, y + dy))
             base[wy, x] = np.clip(base[wy, x].astype(int) + [15, 15, 10], 0, 255).astype(np.uint8)
-
     cv2.line(base, (0, SKY_H), (W, SKY_H), (160, 170, 180), 1)
     return base
-
-
-# ── Vessel drawing helpers ────────────────────────────────────────────────────
-
-def draw_civilian_vessel(img, cx, cy, length):
-    half_l = length // 2
-    half_w = max(4, length // 6)
-    pts = np.array([
-        [cx - half_l, cy - half_w], [cx + half_l - 4, cy - half_w],
-        [cx + half_l, cy],          [cx + half_l - 4, cy + half_w],
-        [cx - half_l, cy + half_w],
-    ], dtype=np.int32)
-    cv2.fillPoly(img, [pts], (30, 60, 120))
-    sx = cx - half_l // 4
-    cv2.rectangle(img, (sx, cy - half_w), (sx + half_l // 3, cy + half_w), (200, 200, 200), -1)
-    cv2.line(img, (cx, cy - half_w - 1), (cx, cy - half_w - 12), (180, 180, 180), 1)
-
-
-def draw_warship(img, cx, cy, length):
-    half_l = length // 2
-    half_w = max(8, length // 8)
-    pts = np.array([
-        [cx - half_l,     cy - half_w], [cx + half_l - 6, cy - half_w],
-        [cx + half_l,     cy],          [cx + half_l - 6, cy + half_w],
-        [cx - half_l,     cy + half_w],
-    ], dtype=np.int32)
-    cv2.fillPoly(img, [pts], (80, 80, 80))
-    sx = cx - half_l // 3
-    cv2.rectangle(img, (sx, cy - half_w - half_w // 2),
-                  (sx + half_l // 2, cy + half_w // 2), (100, 100, 100), -1)
-    mast_x = cx - half_l // 6
-    cv2.line(img, (mast_x, cy - half_w - half_w // 2),
-             (mast_x, cy - half_w - half_w // 2 - 22), (140, 140, 140), 2)
-    cv2.ellipse(img, (mast_x, cy - half_w - half_w // 2 - 22),
-                (8, 4), 0, 0, 180, (160, 160, 160), 1)
-    tx = cx + half_l // 4
-    cv2.circle(img, (tx, cy - half_w // 2), 5, (60, 60, 60), -1)
-    cv2.line(img, (tx, cy - half_w // 2), (tx + 14, cy - half_w // 2 - 4), (60, 60, 60), 2)
-    cv2.putText(img, "F-511", (cx - half_l // 2, cy + half_w + 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1)
 
 
 def draw_horizon_haze(img):
@@ -117,173 +66,242 @@ def draw_horizon_haze(img):
     cv2.addWeighted(haze, 0.15, img, 0.85, 0, img)
 
 
-# ── Camera / servo model ──────────────────────────────────────────────────────
+# ── Vessel drawing ────────────────────────────────────────────────────────────
+
+def draw_civilian_vessel(img, cx, cy, length):
+    hl, hw = length // 2, max(4, length // 6)
+    pts = np.array([[cx - hl, cy - hw], [cx + hl - 4, cy - hw],
+                    [cx + hl, cy], [cx + hl - 4, cy + hw],
+                    [cx - hl, cy + hw]], dtype=np.int32)
+    cv2.fillPoly(img, [pts], (30, 60, 120))
+    sx = cx - hl // 4
+    cv2.rectangle(img, (sx, cy - hw), (sx + hl // 3, cy + hw), (200, 200, 200), -1)
+    cv2.line(img, (cx, cy - hw - 1), (cx, cy - hw - 12), (180, 180, 180), 1)
+
+
+def draw_warship(img, cx, cy, length):
+    hl, hw = length // 2, max(8, length // 8)
+    pts = np.array([[cx - hl, cy - hw], [cx + hl - 6, cy - hw],
+                    [cx + hl, cy], [cx + hl - 6, cy + hw],
+                    [cx - hl, cy + hw]], dtype=np.int32)
+    cv2.fillPoly(img, [pts], (80, 80, 80))
+    sx = cx - hl // 3
+    cv2.rectangle(img, (sx, cy - hw - hw // 2),
+                  (sx + hl // 2, cy + hw // 2), (100, 100, 100), -1)
+    mx = cx - hl // 6
+    cv2.line(img, (mx, cy - hw - hw // 2),
+             (mx, cy - hw - hw // 2 - 22), (140, 140, 140), 2)
+    cv2.ellipse(img, (mx, cy - hw - hw // 2 - 22),
+                (8, 4), 0, 0, 180, (160, 160, 160), 1)
+    tx = cx + hl // 4
+    cv2.circle(img, (tx, cy - hw // 2), 5, (60, 60, 60), -1)
+    cv2.line(img, (tx, cy - hw // 2), (tx + 14, cy - hw // 2 - 4), (60, 60, 60), 2)
+    cv2.putText(img, "F-511", (cx - hl // 2, cy + hw + 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1)
+
+
+# ── Camera / gimbal model ────────────────────────────────────────────────────
 #
-#  pan  : 0–180°  (90° = straight ahead)
-#  elev : 30–70°  (30° = horizon, 70° = steep down)
+# The entire visible scene spans:
+#   Horizontal (bearing): 0° – 180°  mapped to  x = 0 – W
+#   Vertical   (elev)   : 0° – 90°   mapped to  y = SKY_H – H
 #
-#  The FOV trapezoid IS the search area.  It moves on screen as pan/elev change.
-#  Vessels are drawn at fixed screen coordinates; detection fires when a vessel
-#  falls inside the moving FOV trapezoid.
-#
-#  PAN_SCREEN_SCALE: how many pixels the FOV centre shifts per degree of pan.
-#  At ±35° the FOV centre travels ±35 % of screen width.
+# The gimbal's FOV is SMALL — a realistic camera window.
+# During search, the gimbal rasters across the sea.
+# Screen coordinate ↔ angle conversion:
 
-PAN_CENTER       = 90.0
-PAN_SWING        = 35.0
-ELEV_CENTER      = 50.0
-ELEV_SWING       = 20.0
-PAN_SCREEN_SCALE = (W * 0.35) / PAN_SWING   # ≈ 12.8 px / degree
+BRG_MIN, BRG_MAX = 0.0, 180.0       # bearing range (degrees)
+ELEV_MIN, ELEV_MAX = 0.0, 90.0      # elevation range (degrees)
 
+# Camera FOV size (degrees) — small, realistic
+CAM_FOV_H = 30.0     # horizontal FOV in degrees
+CAM_FOV_V = 22.0     # vertical FOV in degrees
 
-def search_pan_elev(fi: int):
-    """Search-sweep angles for frame fi."""
-    t    = fi / N_FRAMES
-    pan  = PAN_CENTER + PAN_SWING  * math.sin(2 * math.pi * t * (DURATION / 8))
-    elev = ELEV_CENTER + ELEV_SWING * math.sin(2 * math.pi * t * (DURATION / 12) + 0.8)
-    return pan, elev
+# Search scan limits (degrees) — the area the gimbal sweeps
+SCAN_BRG_LO,  SCAN_BRG_HI  = 25.0, 155.0
+SCAN_ELEV_LO, SCAN_ELEV_HI = 10.0, 70.0
 
-
-def pan_elev_for_target(cx: int, cy: int):
-    """Compute the pan/elev needed to centre the FOV on screen point (cx, cy)."""
-    pan      = PAN_CENTER + (cx - W // 2) / PAN_SCREEN_SCALE
-    cy_norm  = max(0.0, min(1.0, (cy - SKY_H) / (H - SKY_H)))
-    elev     = 30.0 + cy_norm * 40.0
-    return pan, elev
+# Raster scan timing
+SCAN_ROW_TIME = 2.5    # seconds per horizontal sweep
+SCAN_ROWS     = 3      # number of elevation rows in one full scan
+SCAN_PERIOD   = SCAN_ROW_TIME * SCAN_ROWS  # total scan period
 
 
-# ── FOV trapezoid ─────────────────────────────────────────────────────────────
+def brg_to_x(brg: float) -> int:
+    """Convert bearing angle to screen x pixel."""
+    return int((brg - BRG_MIN) / (BRG_MAX - BRG_MIN) * W)
 
-def fov_trapezoid(pan_deg: float, elev_deg: float):
+
+def elev_to_y(elev: float) -> int:
+    """Convert elevation angle to screen y pixel (high elev = lower on screen)."""
+    t = (elev - ELEV_MIN) / (ELEV_MAX - ELEV_MIN)
+    return int(SKY_H + t * (H - SKY_H))
+
+
+def x_to_brg(x: int) -> float:
+    """Convert screen x pixel to bearing angle."""
+    return BRG_MIN + (x / W) * (BRG_MAX - BRG_MIN)
+
+
+def y_to_elev(y: int) -> float:
+    """Convert screen y pixel to elevation angle."""
+    t = max(0.0, min(1.0, (y - SKY_H) / (H - SKY_H)))
+    return ELEV_MIN + t * (ELEV_MAX - ELEV_MIN)
+
+
+def search_angles(fi: int):
     """
-    Build the FOV trapezoid that moves with the gimbal.
+    Raster scan pattern.  Returns (bearing_deg, elev_deg) — the gimbal's
+    current look direction during search mode.
 
-    - Horizontal centre follows pan_deg.
-    - Vertical position / size follows elev_deg.
-    Returns [top-left, top-right, bot-right, bot-left] in screen pixels.
+    Pattern: row 0 sweeps left→right, row 1 right→left, row 2 left→right …
+    After all rows → loops back to row 0.
     """
-    sea_top = SKY_H
-    sea_bot = H
+    t_scan = (fi / FPS) % SCAN_PERIOD          # time within one scan cycle
+    row    = int(t_scan / SCAN_ROW_TIME)        # which row (0..SCAN_ROWS-1)
+    row    = min(row, SCAN_ROWS - 1)
+    t_row  = (t_scan - row * SCAN_ROW_TIME) / SCAN_ROW_TIME   # 0..1 within row
 
-    norm_elev = max(0.0, min(1.0, (elev_deg - 30) / 40))
-    sea_range = sea_bot - sea_top
+    # Smooth the sweep with sinusoidal easing
+    t_smooth = 0.5 - 0.5 * math.cos(math.pi * t_row)
 
-    fov_cy = sea_top + int(sea_range * (0.15 + 0.60 * norm_elev))
-    half_h = int(sea_range * (0.30 - 0.10 * norm_elev))
-    top_y  = max(sea_top + 2, fov_cy - half_h)
-    bot_y  = min(sea_bot - 2, fov_cy + half_h)
+    # Horizontal: alternate direction per row
+    if row % 2 == 0:
+        brg = SCAN_BRG_LO + (SCAN_BRG_HI - SCAN_BRG_LO) * t_smooth
+    else:
+        brg = SCAN_BRG_HI - (SCAN_BRG_HI - SCAN_BRG_LO) * t_smooth
 
-    # Horizontal centre tracks pan
-    cx = W // 2 + int((pan_deg - PAN_CENTER) * PAN_SCREEN_SCALE)
+    # Vertical: step down per row
+    elev_step = (SCAN_ELEV_HI - SCAN_ELEV_LO) / max(1, SCAN_ROWS - 1)
+    elev = SCAN_ELEV_LO + row * elev_step
 
-    half_w_top = int(W * (0.18 + 0.04 * norm_elev))
-    half_w_bot = int(W * (0.28 + 0.06 * norm_elev))
-
-    return [
-        (cx - half_w_top, top_y),
-        (cx + half_w_top, top_y),
-        (cx + half_w_bot, bot_y),
-        (cx - half_w_bot, bot_y),
-    ]
+    return brg, elev
 
 
-def point_in_poly(px: int, py: int, poly) -> bool:
-    n, inside, j = len(poly), False, len(poly) - 1
-    for i in range(n):
-        xi, yi = poly[i]; xj, yj = poly[j]
-        if ((yi > py) != (yj > py)) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
-            inside = not inside
-        j = i
-    return inside
+def fov_rect(brg_deg: float, elev_deg: float):
+    """
+    Return the 4 corners of the FOV rectangle on screen.
+    The rectangle is centred on (brg_deg, elev_deg) with size (CAM_FOV_H, CAM_FOV_V).
+    Returns [top-left, top-right, bot-right, bot-left].
+    """
+    cx = brg_to_x(brg_deg)
+    cy = elev_to_y(elev_deg)
+
+    half_w = brg_to_x(BRG_MIN + CAM_FOV_H) // 2
+    half_h = (elev_to_y(ELEV_MIN + CAM_FOV_V) - SKY_H) // 2
+
+    x1 = max(0, cx - half_w)
+    x2 = min(W, cx + half_w)
+    y1 = max(SKY_H, cy - half_h)
+    y2 = min(H, cy + half_h)
+
+    return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
 
 
-def draw_fov_overlay(img: np.ndarray, poly, mode: str) -> None:
-    """Draw the semi-transparent FOV trapezoid. mode: 'search'|'acquired'|'tracking'."""
-    pts = np.array(poly, dtype=np.int32)
+def point_in_rect(px, py, rect):
+    """Check if point is inside the FOV rectangle."""
+    x1, y1 = rect[0]
+    x2, y2 = rect[2]
+    return x1 <= px <= x2 and y1 <= py <= y2
+
+
+def draw_fov_overlay(img, rect, mode):
+    """Draw the FOV rectangle overlay. mode: 'search'|'acquired'|'tracking'."""
+    pts = np.array(rect, dtype=np.int32)
 
     if mode == "tracking":
-        fill_col   = (0, 80, 200)
-        border_col = (30, 140, 255)
+        fill_col, border_col = (0, 80, 200), (30, 140, 255)
     elif mode == "acquired":
-        fill_col   = (0, 180, 0)
-        border_col = (0, 255, 80)
+        fill_col, border_col = (0, 180, 0), (0, 255, 80)
     else:
-        fill_col   = (0, 100, 40)
-        border_col = (0, 160, 60)
+        fill_col, border_col = (0, 100, 40), (0, 160, 60)
 
     overlay = img.copy()
     cv2.fillPoly(overlay, [pts], fill_col)
-    cv2.addWeighted(overlay, 0.18, img, 0.82, 0, img)
-    cv2.polylines(img, [pts], isClosed=True, color=border_col, thickness=2,
-                  lineType=cv2.LINE_AA)
-    tick = 8
-    for (x, y) in poly:
-        cv2.line(img, (x - tick, y), (x + tick, y), border_col, 1)
-        cv2.line(img, (x, y - tick), (x, y + tick), border_col, 1)
+    cv2.addWeighted(overlay, 0.20, img, 0.80, 0, img)
+    cv2.polylines(img, [pts], True, border_col, 2, cv2.LINE_AA)
+
+    # Corner brackets
+    x1, y1 = rect[0]; x2, y2 = rect[2]
+    bk = 14
+    for (cx, cy), (dx, dy) in [((x1, y1), (1, 1)), ((x2, y1), (-1, 1)),
+                                 ((x2, y2), (-1, -1)), ((x1, y2), (1, -1))]:
+        cv2.line(img, (cx, cy), (cx + dx * bk, cy), border_col, 2)
+        cv2.line(img, (cx, cy), (cx, cy + dy * bk), border_col, 2)
 
 
-# ── Vessel trajectories (screen-space, no pan projection) ────────────────────
-#
-#  Vessels move linearly across the fixed scene.
-#  The camera pan/tilt sweeps the FOV over them — not the other way round.
+# ── Crosshair for tracking ───────────────────────────────────────────────────
+
+def draw_crosshair(img, cx, cy, size=20):
+    """Draw a targeting crosshair at (cx, cy)."""
+    col = (30, 140, 255)
+    gap = 6
+    cv2.line(img, (cx - size, cy), (cx - gap, cy), col, 1, cv2.LINE_AA)
+    cv2.line(img, (cx + gap, cy), (cx + size, cy), col, 1, cv2.LINE_AA)
+    cv2.line(img, (cx, cy - size), (cx, cy - gap), col, 1, cv2.LINE_AA)
+    cv2.line(img, (cx, cy + gap), (cx, cy + size), col, 1, cv2.LINE_AA)
+    cv2.circle(img, (cx, cy), gap, col, 1, cv2.LINE_AA)
+
+
+# ── Vessel trajectories ──────────────────────────────────────────────────────
+# Screen-space.  Vessels move linearly.  The gimbal sweeps over them.
 
 VESSELS = [
-    # Civilian 1 — small, near horizon, left → right
-    {"start": -60,    "end": W + 80,  "y": SKY_H + 55,  "length": 45,  "mil": False, "speed": 1.8, "label": "CIVILIAN-A"},
-    # Civilian 2 — medium, mid distance, right → left
-    {"start": W + 60, "end": -80,     "y": SKY_H + 140, "length": 65,  "mil": False, "speed": 1.4, "label": "CIVILIAN-B"},
-    # Warship — enters from right, crosses screen slowly
-    {"start": W + 80, "end": -200,    "y": SKY_H + 200, "length": 160, "mil": True,  "speed": 0.9, "label": "WARSHIP F-511"},
+    {"start": -50,    "end": W + 60,  "y": SKY_H + 50,  "length": 40,
+     "mil": False, "speed": 1.6, "label": "CIVILIAN-A"},
+    {"start": W + 50, "end": -60,     "y": SKY_H + 150, "length": 60,
+     "mil": False, "speed": 1.2, "label": "CIVILIAN-B"},
+    {"start": W + 60, "end": -100,    "y": SKY_H + 240, "length": 140,
+     "mil": True,  "speed": 0.75, "label": "WARSHIP F-511"},
 ]
 
-# ── Camera state ──────────────────────────────────────────────────────────────
-tracking  = False          # True once warship is detected
-cur_pan, cur_elev = search_pan_elev(0)
+# ── State ─────────────────────────────────────────────────────────────────────
+tracking   = False
+cur_brg    = SCAN_BRG_LO
+cur_elev   = SCAN_ELEV_LO
 
-# ── Render loop ───────────────────────────────────────────────────────────────
+# ── Render ────────────────────────────────────────────────────────────────────
 print(f"Generating {N_FRAMES} frames → {OUT_PATH} ...")
 for fi in range(N_FRAMES):
     sea = make_sea(fi)
     draw_horizon_haze(sea)
 
-    # ── Vessel screen positions (independent of camera pan) ───────────────────
+    # ── Vessel positions ──────────────────────────────────────────────────────
     vessel_positions = []
-    warship_screen   = None          # (cx, cy) of warship if on screen
+    warship_screen = None
 
     for v in VESSELS:
         progress = fi * v["speed"] / N_FRAMES
         cx = int(v["start"] + (v["end"] - v["start"]) * progress)
         cy = v["y"]
-        if cx < -300 or cx > W + 300:
+        if cx < -200 or cx > W + 200:
             continue
         vessel_positions.append({**v, "cx": cx, "cy": cy, "in_fov": False})
         if v["mil"] and 0 <= cx <= W:
             warship_screen = (cx, cy)
 
-    # ── Update pan / elev ─────────────────────────────────────────────────────
+    # ── Update gimbal angles ──────────────────────────────────────────────────
     if tracking and warship_screen:
-        # Smoothly track the warship
-        tp, te   = pan_elev_for_target(*warship_screen)
-        cur_pan  += (tp - cur_pan)  * 0.10
-        cur_elev += (te - cur_elev) * 0.10
+        # Smooth tracking: converge toward target
+        target_brg  = x_to_brg(warship_screen[0])
+        target_elev = y_to_elev(warship_screen[1])
+        cur_brg  += (target_brg  - cur_brg)  * 0.12
+        cur_elev += (target_elev - cur_elev) * 0.12
     elif not tracking:
-        # Search sweep
-        cur_pan, cur_elev = search_pan_elev(fi)
-    # else: tracking=True but warship off-screen → hold last angles
+        cur_brg, cur_elev = search_angles(fi)
 
-    # ── FOV trapezoid (moves with pan/elev) ───────────────────────────────────
-    fov_poly = fov_trapezoid(cur_pan, cur_elev)
+    # ── FOV rectangle ─────────────────────────────────────────────────────────
+    fov = fov_rect(cur_brg, cur_elev)
 
     # ── Detection ─────────────────────────────────────────────────────────────
     for vp in vessel_positions:
-        on_screen    = 0 <= vp["cx"] <= W
-        vp["in_fov"] = on_screen and point_in_poly(vp["cx"], vp["cy"], fov_poly)
+        on_screen = 0 <= vp["cx"] <= W
+        vp["in_fov"] = on_screen and point_in_rect(vp["cx"], vp["cy"], fov)
         if vp["mil"] and vp["in_fov"] and not tracking:
-            tracking = True   # lock on first detection of warship
+            tracking = True
 
     any_target = any(vp["in_fov"] for vp in vessel_positions)
 
-    # ── Determine display mode ────────────────────────────────────────────────
     if tracking:
         disp_mode = "tracking"
     elif any_target:
@@ -291,8 +309,8 @@ for fi in range(N_FRAMES):
     else:
         disp_mode = "search"
 
-    # ── Draw scene ────────────────────────────────────────────────────────────
-    draw_fov_overlay(sea, fov_poly, disp_mode)
+    # ── Draw ──────────────────────────────────────────────────────────────────
+    draw_fov_overlay(sea, fov, disp_mode)
 
     for vp in vessel_positions:
         cx, cy = vp["cx"], vp["cy"]
@@ -302,49 +320,58 @@ for fi in range(N_FRAMES):
             draw_civilian_vessel(sea, cx, cy, vp["length"])
 
         if vp["in_fov"]:
-            hl      = vp["length"] // 2
-            hw      = max(8, vp["length"] // 8) + 4
+            hl = vp["length"] // 2
+            hw = max(8, vp["length"] // 8) + 4
             box_col = (0, 60, 220) if vp["mil"] else (0, 200, 80)
             cv2.rectangle(sea,
                           (cx - hl - 4, cy - hw - 18),
-                          (cx + hl + 4, cy + hw + 4),
-                          box_col, 2)
+                          (cx + hl + 4, cy + hw + 4), box_col, 2)
             cv2.putText(sea, vp["label"],
                         (cx - hl - 2, cy - hw - 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.38, box_col, 1, cv2.LINE_AA)
 
-    # ── HUD ──────────────────────────────────────────────────────────────────
-    hud_lines = [
-        f"PAN  {cur_pan:5.1f} deg",
+    # Crosshair in tracking mode
+    if tracking and warship_screen:
+        draw_crosshair(sea, *warship_screen)
+
+    # ── HUD ───────────────────────────────────────────────────────────────────
+    hud = [
+        f"BRG  {cur_brg:6.1f} deg",
         f"ELEV {cur_elev:5.1f} deg",
         f"ALT  120 m",
         f"MODE {'TRACK' if tracking else 'SEARCH'}",
     ]
-    for i, line in enumerate(hud_lines):
+    for i, line in enumerate(hud):
         col = (30, 140, 255) if (i == 3 and tracking) else (180, 220, 255)
         cv2.putText(sea, line, (12, 22 + i * 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, col, 1, cv2.LINE_AA)
 
     if disp_mode == "tracking":
-        status_text = "TRACKING TARGET"
-        status_col  = (30, 140, 255)
+        st, sc = "TRACKING TARGET", (30, 140, 255)
     elif disp_mode == "acquired":
-        status_text = "TARGET ACQUIRED"
-        status_col  = (0, 255, 100)
+        st, sc = "TARGET ACQUIRED", (0, 255, 100)
     else:
-        status_text = "SEARCHING..."
-        status_col  = (0, 180, 220)
+        st, sc = "SEARCHING...", (0, 180, 220)
+    (tw, _), _ = cv2.getTextSize(st, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+    cv2.putText(sea, st, (W - tw - 12, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.50, sc, 1, cv2.LINE_AA)
 
-    (tw, _), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
-    cv2.putText(sea, status_text, (W - tw - 12, 22),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.50, status_col, 1, cv2.LINE_AA)
+    # FOV label
+    lbl_col = (30, 140, 255) if disp_mode == "tracking" else (0, 210, 80)
+    lbl_txt = "[ TRACK ]" if disp_mode == "tracking" else "[ SEARCH AREA ]"
+    cv2.putText(sea, lbl_txt, (fov[0][0] + 4, fov[0][1] - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, lbl_col, 1, cv2.LINE_AA)
 
-    # FOV label (colour matches mode)
-    fov_label_col = (30, 140, 255) if disp_mode == "tracking" else (0, 210, 80)
-    fov_label     = "[ TRACK AREA ]" if disp_mode == "tracking" else "[ SEARCH AREA ]"
-    fov_tx, fov_ty = fov_poly[0]
-    cv2.putText(sea, fov_label, (fov_tx + 4, fov_ty - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.36, fov_label_col, 1, cv2.LINE_AA)
+    # Confidence in tracking mode
+    if tracking and warship_screen:
+        fov_cx = (fov[0][0] + fov[2][0]) // 2
+        fov_cy = (fov[0][1] + fov[2][1]) // 2
+        dist = math.hypot(warship_screen[0] - fov_cx, warship_screen[1] - fov_cy)
+        max_dist = math.hypot(W // 4, (H - SKY_H) // 4)
+        conf = max(0.0, min(100.0, 100.0 * (1.0 - dist / max_dist)))
+        conf_txt = f"CONF {conf:4.1f}%"
+        cv2.putText(sea, conf_txt, (12, 22 + 4 * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (30, 140, 255), 1, cv2.LINE_AA)
 
     ts = f"AEGIS-MARITIME-001  |  {fi // FPS:02d}s  |  37.915N 26.340E"
     cv2.putText(sea, ts, (10, H - 10),
@@ -352,7 +379,7 @@ for fi in range(N_FRAMES):
 
     writer.write(sea)
     if fi % 50 == 0:
-        print(f"  {fi}/{N_FRAMES}", end="\r", flush=True)
+        print(f"  {fi}/{N_FRAMES}", end="  ", flush=True)
 
 writer.release()
 print(f"\nDone → {OUT_PATH}  ({OUT_PATH.stat().st_size // 1024} KB)")
