@@ -25,15 +25,12 @@ nato_log_format: true          # Enforce NATO Incident Report log lines
 inference:
   model_path: "edge/models/yolov8n.onnx"  # ONNX backend (no PyTorch) | swap to .pt for ultralytics
   nms_iou_threshold: 0.45                     # Non-max suppression IoU cutoff
-  target_classes:                             # Filter: only report these labels
-    - "person"
-    - "drone"
-    - "vehicle"
+  target_classes:                             # Maritime scenario: surface vessel detection only
     - "ship"
     - "boat"
   device: "cuda"                              # "cuda" | "cpu" | "0" (GPU idx)
   image_size: 640                             # Inference resolution (px)
-  confidence_threshold: 0.45                  # Lowered for maritime targets (ship/boat harder to detect)
+  confidence_threshold: 0.35                  # Lowered for maritime — vessels at distance/horizon harder to detect
   grad_cam_enabled: true                      # XAI: generate heatmap stubs
   grad_cam_trigger: "Hostile"                 # Only generate for risk level
   # Simulation sources
@@ -157,11 +154,12 @@ aiops:
 # NATO METADATA  (Incident Report Context)
 # ---------------------------------------------------------------------------
 nato_metadata:
-  station_id: "AEGIS-EDGE-001"
-  unit_designation: "DIEHL-GARMR-UNIT-1"
-  unit_coordinates:                  # WGS-84 placeholders — update on deployment
-    lat: 48.3984                     # [AIOPS UPDATE] Set to Neu-Ulm, Bavaria
-    lon: 10.0011
-    alt_m: 470.0
+  station_id: "AEGIS-MARITIME-001"
+  unit_designation: "AEGIS-DRONE-MARITIME-PATROL-1"
+  unit_coordinates:                  # WGS-84 — Eastern Aegean Sea patrol zone
+    lat: 37.9150                     # Aegean Sea, approx. between Chios and Izmir
+    lon: 26.3400
+    alt_m: 120.0                     # Drone patrol altitude (m AGL)
   classification_level: "UNCLASSIFIED//FOR TRAINING ONLY"
   reporting_format: "STANAG-4586-STUB"
+  scenario: "MARITIME_SURVEILLANCE"  # Active mission type

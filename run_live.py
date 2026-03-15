@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-AEGIS-Cloud - Live Tracking Pipeline
-======================================
-Real video -> YOLOv8 detection -> PCA9685 servo tracking
-Displays a full tactical overlay on the connected screen.
+AEGIS-Cloud - Maritime Surveillance Pipeline
+=============================================
+Drone-mounted YOLOv8 detection -> vessel classification -> PCA9685 servo tracking
+Scans sea surface for vessels. Locks onto military contacts.
 
 Usage:
-  python run_live.py --camera 0          # USB webcam
+  python run_live.py --camera 0          # USB webcam / drone camera
   python run_live.py --video path/to.mp4 # video file
   python run_live.py --gstreamer         # IMX219 CSI camera (Nano)
 """
@@ -32,8 +32,13 @@ except Exception as e:
     print(f"[SERVO] PCA9685 not found — angles will be logged only ({e})")
 
 # ── YOLOv8 ───────────────────────────────────────────────────────────────────
-# COCO-80 has no "drone" class; remap visually similar aerial objects
-_DRONE_ALIASES = {"airplane": "drone", "kite": "drone"}
+# COCO-80 maritime remaps: surface vessel labels normalised for naval context
+_VESSEL_ALIASES = {
+    "boat":       "vessel",
+    "ship":       "vessel",
+    "sailboat":   "vessel",
+    "surfboard":  "vessel",   # false-positive mitigation — treated as small boat
+}
 
 MODEL_OK = False
 _model   = None
@@ -71,9 +76,8 @@ if not MODEL_OK:
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
-TARGET_CLASSES  = {"drone", "person", "vehicle", "car", "truck",
-                   "bus", "motorcycle", "boat", "ship"}
-CONF_THRESHOLD  = 0.45
+TARGET_CLASSES  = {"vessel", "boat", "ship"}   # Maritime surface contacts only
+CONF_THRESHOLD  = 0.35                          # Lower threshold — distant vessels at horizon
 KP, KD, DEADZONE = 0.4, 0.05, 0.03
 SEARCH_SPEED    = 0.4   # rad/s — pan sweep speed in search mode
 SEARCH_AMP      = 60.0  # degrees — half-amplitude of search sweep
@@ -146,6 +150,24 @@ def servo_track(bbox: list) -> tuple:
 # ─────────────────────────────────────────────────────────────────────────────
 # Detection
 # ─────────────────────────────────────────────────────────────────────────────
+def _classify_vessel(bbox: list) -> str:
+    """
+    Heuristic vessel threat classification based on bounding-box size.
+    Large, well-defined contacts → warship/patrol_boat.
+    Small/distant contacts → vessel (unknown civilian).
+
+    Moondream VLM will later refine this with visual hull analysis.
+    """
+    bw = bbox[2] - bbox[0]
+    bh = bbox[3] - bbox[1]
+    area = bw * bh
+    if area > 0.12:          # >12% of frame — large warship/frigate
+        return "warship"
+    elif area > 0.04:        # 4-12% — patrol boat / coast guard
+        return "patrol_boat"
+    return "vessel"          # Small/distant — civilian until confirmed otherwise
+
+
 def detect(frame: np.ndarray, frame_id: int) -> list:
     """Returns list of (cls_name, confidence, [x1,y1,x2,y2] normalised)."""
     if MODEL_OK:
@@ -154,16 +176,20 @@ def detect(frame: np.ndarray, frame_id: int) -> list:
         for r in results:
             for box in r.boxes:
                 raw_cls  = r.names[int(box.cls.item())].lower()
-                cls_name = _DRONE_ALIASES.get(raw_cls, raw_cls)
+                cls_name = _VESSEL_ALIASES.get(raw_cls, raw_cls)
                 if cls_name not in TARGET_CLASSES:
                     continue
-                out.append((cls_name, float(box.conf.item()), box.xyxyn.tolist()[0]))
+                bbox = box.xyxyn.tolist()[0]
+                cls_name = _classify_vessel(bbox)
+                out.append((cls_name, float(box.conf.item()), bbox))
         return out
-    # Mock: sliding drone
-    t  = frame_id % 240
-    cx = 0.10 + t * 0.0033
-    return [("drone", round(0.82 + (frame_id % 5) * 0.02, 2),
-             [cx - 0.06, 0.38, cx + 0.06, 0.62])]
+    # Mock: vessel crossing frame — simulates drone patrol over sea
+    t  = frame_id % 300
+    cx = 0.05 + t * 0.003
+    mock_bbox = [cx - 0.08, 0.42, cx + 0.08, 0.58]
+    return [(_classify_vessel(mock_bbox),
+             round(0.75 + (frame_id % 5) * 0.02, 2),
+             mock_bbox)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -191,43 +217,58 @@ def draw_overlay(frame: np.ndarray,
     cv2.circle(out, (cx_frame, cy_frame), 4, C_CYAN, 1)
 
     # ── Detection boxes ────────────────────────────────────────────────────
+    MILITARY_CLASSES = {"warship", "patrol_boat"}
     best_det = None
+    best_military = None
     for cls_name, conf, bbox in detections:
         x1 = int(bbox[0] * w); y1 = int(bbox[1] * h)
         x2 = int(bbox[2] * w); y2 = int(bbox[3] * h)
-        color = C_RED if cls_name == "drone" else C_GREEN
+        is_military = cls_name in MILITARY_CLASSES
+        color = C_RED if is_military else C_YELLOW
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
 
-        # Confidence bar (40px wide, beneath label)
+        # Confidence bar beneath label
         bar_w = int((x2 - x1) * conf)
         cv2.rectangle(out, (x1, y2 + 2), (x1 + (x2 - x1), y2 + 8), C_DARK, -1)
         cv2.rectangle(out, (x1, y2 + 2), (x1 + bar_w, y2 + 8), color, -1)
 
-        label = f"{cls_name.upper()}  {conf*100:.0f}%"
+        threat_tag = "!! MILITARY !!" if is_military else "CONTACT"
+        label = f"{cls_name.upper()}  {conf*100:.0f}%  {threat_tag}"
         _put(out, label, (x1, y1 - 8), scale=0.5, color=color, thickness=2)
 
+        if is_military and (best_military is None or conf > best_military[1]):
+            best_military = (cls_name, conf, bbox)
         if best_det is None or conf > best_det[1]:
             best_det = (cls_name, conf, bbox)
 
-    # ── Line from crosshair to target centre (tracking mode) ──────────────
-    if best_det is not None:
-        bbox = best_det[2]
+    # Military contact takes priority as tracking target
+    tracking_target = best_military if best_military else best_det
+
+    # ── Line from crosshair to tracking target ────────────────────────────
+    if tracking_target is not None:
+        bbox = tracking_target[2]
         tx = int((bbox[0] + bbox[2]) / 2 * w)
         ty = int((bbox[1] + bbox[3]) / 2 * h)
-        cv2.line(out, (cx_frame, cy_frame), (tx, ty), C_YELLOW, 1, cv2.LINE_AA)
-        cv2.circle(out, (tx, ty), 5, C_YELLOW, -1)
+        line_color = C_RED if tracking_target in (best_military,) and best_military else C_YELLOW
+        cv2.line(out, (cx_frame, cy_frame), (tx, ty), line_color, 1, cv2.LINE_AA)
+        cv2.circle(out, (tx, ty), 5, line_color, -1)
 
     # ── Top-left status panel ──────────────────────────────────────────────
-    panel_h = 90
+    panel_h = 105
     overlay = out.copy()
-    cv2.rectangle(overlay, (0, 0), (300, panel_h), C_DARK, -1)
+    cv2.rectangle(overlay, (0, 0), (320, panel_h), C_DARK, -1)
     cv2.addWeighted(overlay, 0.6, out, 0.4, 0, out)
 
-    mode_color = C_GREEN if mode == "TRACKING" else C_YELLOW
-    _put(out, f"MODE : {mode}", (8, 20), scale=0.6, color=mode_color, thickness=2)
-    _put(out, f"PAN  : {pan_deg:6.1f} deg", (8, 44), color=C_WHITE)
-    _put(out, f"TILT : {tilt_deg:6.1f} deg", (8, 63), color=C_WHITE)
-    _put(out, f"SERVO: {'ACTIVE' if SERVO_OK else 'SIM'}", (8, 82), color=C_CYAN)
+    # Title line
+    _put(out, "AEGIS  MARITIME SURVEILLANCE", (8, 17), scale=0.55, color=C_CYAN, thickness=2)
+
+    military_active = best_military is not None
+    mode_color = C_RED if military_active else (C_GREEN if mode == "TRACKING" else C_YELLOW)
+    mode_label = "MILITARY LOCK" if military_active else mode
+    _put(out, f"MODE : {mode_label}", (8, 37), scale=0.6, color=mode_color, thickness=2)
+    _put(out, f"BRG  : {pan_deg:6.1f} deg", (8, 57), color=C_WHITE)
+    _put(out, f"ELEV : {tilt_deg:6.1f} deg", (8, 73), color=C_WHITE)
+    _put(out, f"SERVO: {'ACTIVE' if SERVO_OK else 'SIM'}", (8, 90), color=C_CYAN)
 
     # ── Top-right FPS & frame ──────────────────────────────────────────────
     _put(out, f"FPS {fps:4.1f}", (w - 100, 20), color=C_WHITE)
@@ -240,15 +281,19 @@ def draw_overlay(frame: np.ndarray,
     cv2.addWeighted(overlay2, 0.6, out, 0.4, 0, out)
 
     model_str = f"YOLOv8n[{_backend}]" if MODEL_OK else "MOCK"
-    if best_det:
-        cls_name, conf, bbox = best_det
+    active = tracking_target if tracking_target else best_det
+    if active:
+        cls_name, conf, bbox = active
         cx_t = (bbox[0] + bbox[2]) / 2
         cy_t = (bbox[1] + bbox[3]) / 2
-        info = (f"TARGET: {cls_name.upper()}  conf={conf:.2f}  "
-                f"cx={cx_t:.2f}  cy={cy_t:.2f}  [{model_str}]")
-        _put(out, info, (8, h - 10), scale=0.48, color=C_YELLOW)
+        is_mil = cls_name in {"warship", "patrol_boat"}
+        info_color = C_RED if is_mil else C_YELLOW
+        threat = "MILITARY CONTACT" if is_mil else "UNKNOWN VESSEL"
+        info = (f"{threat}: {cls_name.upper()}  conf={conf:.2f}  "
+                f"brg={pan_deg:.1f}  [{model_str}]")
+        _put(out, info, (8, h - 10), scale=0.48, color=info_color)
     else:
-        _put(out, f"TARGET: NONE  [{model_str}]  SEARCHING...",
+        _put(out, f"CONTACT: NONE  [{model_str}]  SCANNING SEA SURFACE...",
              (8, h - 10), scale=0.48, color=C_CYAN)
 
     return out
@@ -299,13 +344,15 @@ def main():
 
     cap, label = open_capture(args)
 
-    print("\n" + "=" * 60)
-    print("  AEGIS — Live Tracking Pipeline")
-    print(f"  Source : {label}")
-    print(f"  Model  : {'YOLOv8n [' + _backend + ']' if MODEL_OK else 'Mock detections'}")
-    print(f"  Servo  : {'PCA9685 ACTIVE' if SERVO_OK else 'Simulation (log only)'}")
-    print("  Stop   : press Q in the window or Ctrl+C")
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 65)
+    print("  AEGIS — Maritime Surveillance Pipeline")
+    print(f"  Source    : {label}")
+    print(f"  Model     : {'YOLOv8n [' + _backend + ']' if MODEL_OK else 'Mock detections'}")
+    print(f"  Servo     : {'PCA9685 ACTIVE' if SERVO_OK else 'Simulation (log only)'}")
+    print("  Targets   : vessel / patrol_boat / warship")
+    print("  Priority  : MILITARY contacts lock immediately")
+    print("  Stop      : press Q in the window or Ctrl+C")
+    print("=" * 65 + "\n")
 
     frame_id  = 0
     fps       = 0.0
@@ -325,9 +372,16 @@ def main():
             detections = detect(frame, frame_id)
 
             # ── Step 2: Servo ─────────────────────────────────────────────
-            if detections:
-                best = max(detections, key=lambda d: d[1])
-                pan_deg, tilt_deg = servo_track(best[2])
+            # Military contacts (warship/patrol_boat) take tracking priority
+            military_dets = [d for d in detections
+                             if d[0] in {"warship", "patrol_boat"}]
+            if military_dets:
+                target = max(military_dets, key=lambda d: d[1])
+                pan_deg, tilt_deg = servo_track(target[2])
+                mode = "MILITARY LOCK"
+            elif detections:
+                target = max(detections, key=lambda d: d[1])
+                pan_deg, tilt_deg = servo_track(target[2])
                 mode = "TRACKING"
             else:
                 pan_deg, tilt_deg = servo_search()
@@ -347,18 +401,20 @@ def main():
                 cv2.imshow("AEGIS  |  Live Tracking", out)
 
             # ── Step 5: Terminal log ──────────────────────────────────────
-            if detections:
-                best = max(detections, key=lambda d: d[1])
+            all_dets = military_dets if military_dets else detections
+            if all_dets:
+                best = max(all_dets, key=lambda d: d[1])
+                mil_tag = " [!!MILITARY!!]" if best[0] in {"warship", "patrol_boat"} else ""
                 print(
-                    f"[F{frame_id:04d}] {mode:9s} | "
-                    f"{best[0]:8s} {best[1]:.2f} | "
-                    f"pan={pan_deg:6.1f}  tilt={tilt_deg:6.1f} | "
+                    f"[F{frame_id:04d}] {mode:14s} | "
+                    f"{best[0]:12s} {best[1]:.2f}{mil_tag} | "
+                    f"brg={pan_deg:6.1f}  elev={tilt_deg:6.1f} | "
                     f"{(time.perf_counter()-t0)*1000:.0f}ms"
                 )
             else:
                 print(
-                    f"[F{frame_id:04d}] {mode:9s} | "
-                    f"pan={pan_deg:6.1f}  tilt={tilt_deg:6.1f} | "
+                    f"[F{frame_id:04d}] {'SCANNING':14s} | "
+                    f"brg={pan_deg:6.1f}  elev={tilt_deg:6.1f} | "
                     f"{(time.perf_counter()-t0)*1000:.0f}ms"
                 )
 

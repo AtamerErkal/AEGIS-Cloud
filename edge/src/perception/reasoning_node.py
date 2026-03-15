@@ -63,17 +63,20 @@ except ImportError:
 CONFIG_PATH = Path("edge/config/edge_settings.yaml")
 
 _TACTICAL_PROMPT = (
-    "You are an AI assistant for a defence operator. "
-    "Describe the tactical threat in this image concisely: "
-    "identify the object type, number of units, estimated range if visible, "
-    "any payload or markings, and recommend a threat level "
-    "(LOW / MEDIUM / HIGH / CRITICAL)."
+    "You are an AI assistant for a naval surveillance drone operator. "
+    "Analyse this maritime image concisely: "
+    "identify the vessel type (warship/patrol boat/cargo ship/tanker/fishing vessel/unknown), "
+    "estimate vessel length and hull colour if visible, "
+    "note any visible armament, radar masts, hull numbers or national markings, "
+    "and recommend a threat level (LOW / MEDIUM / HIGH / CRITICAL). "
+    "If the vessel appears military, state 'MILITARY CONTACT'."
 )
 
 _SIM_RESPONSE = (
-    "SIM | Small quadcopter UAV detected. Four rotors visible. "
-    "No visible payload. Range: estimated 50-100 m. "
-    "Threat level: HIGH. Recommend tracking and escalation."
+    "SIM | MILITARY CONTACT. Grey-hulled patrol vessel, approx 40-60 m length. "
+    "Radar mast visible. No visible armament. Hull markings unclear. "
+    "Range: estimated 800-1200 m. "
+    "Threat level: HIGH. Recommend tracking and reporting to command."
 )
 
 # Default crop size — overridden by reasoning.image_resize_px in YAML
