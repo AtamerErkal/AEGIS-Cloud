@@ -79,6 +79,12 @@ try:
 except Exception:
     _GPU_AVAILABLE = False
 
+try:
+    import onnxruntime as _ort  # noqa: F401
+    _ONNX_AVAILABLE = True
+except ImportError:
+    _ONNX_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -90,7 +96,247 @@ _RISK_MAP: dict[str, str] = {
     "drone":   "Hostile",
     "person":  "Unknown",
     "vehicle": "Unknown",
+    "ship":    "Unknown",   # Maritime target — requires Moondream evaluation to upgrade
+    "boat":    "Unknown",
 }
+
+
+# ---------------------------------------------------------------------------
+# ONNX Inference Backend  (no PyTorch / ultralytics required)
+# ---------------------------------------------------------------------------
+
+class _OnnxBox:
+    """Mirrors the ultralytics ``Boxes`` attribute API used in _run_inference."""
+
+    def __init__(self, cls_id: int, conf: float, xyxyn: list) -> None:
+        self._cls_id = cls_id
+        self._conf   = conf
+        self._xyxyn  = xyxyn
+
+    class _Val:
+        def __init__(self, v: Any) -> None: self._v = v
+        def item(self) -> Any: return self._v
+
+    class _Coords:
+        def __init__(self, c: list) -> None: self._c = c
+        def tolist(self) -> list: return [self._c]
+
+    @property
+    def cls(self) -> "_OnnxBox._Val":    return self._Val(self._cls_id)
+    @property
+    def conf(self) -> "_OnnxBox._Val":   return self._Val(self._conf)
+    @property
+    def xyxyn(self) -> "_OnnxBox._Coords": return self._Coords(self._xyxyn)
+
+
+class _OnnxResult:
+    """Mirrors an ultralytics ``Results`` object."""
+
+    def __init__(self, boxes: list, names: dict) -> None:
+        self.boxes = boxes
+        self.names = names
+
+
+class _OnnxModel:
+    """
+    Lightweight YOLOv8 ONNX inference engine — no PyTorch required.
+
+    Supports any YOLOv8 ONNX export (opset 12+).
+    Input:  ``images``  → (1, 3, imgsz, imgsz) float32
+    Output: ``output0`` → (1, 4+nc, 8400) float32
+    """
+
+    # COCO-80 class names (fallback if model metadata absent)
+    _COCO: dict = {
+        0: "person",      1: "bicycle",     2: "car",           3: "motorcycle",
+        4: "airplane",    5: "bus",         6: "train",         7: "truck",
+        8: "boat",        9: "traffic light", 10: "fire hydrant", 11: "stop sign",
+        12: "parking meter", 13: "bench",   14: "bird",         15: "cat",
+        16: "dog",        17: "horse",      18: "sheep",        19: "cow",
+        20: "elephant",   21: "bear",       22: "zebra",        23: "giraffe",
+        24: "backpack",   25: "umbrella",   26: "handbag",      27: "tie",
+        28: "suitcase",   29: "frisbee",    30: "skis",         31: "snowboard",
+        32: "sports ball", 33: "kite",      34: "baseball bat", 35: "baseball glove",
+        36: "skateboard", 37: "surfboard",  38: "tennis racket", 39: "bottle",
+        40: "wine glass", 41: "cup",        42: "fork",         43: "knife",
+        44: "spoon",      45: "bowl",       46: "banana",       47: "apple",
+        48: "sandwich",   49: "orange",     50: "broccoli",     51: "carrot",
+        52: "hot dog",    53: "pizza",      54: "donut",        55: "cake",
+        56: "chair",      57: "couch",      58: "potted plant", 59: "bed",
+        60: "dining table", 61: "toilet",   62: "tv",           63: "laptop",
+        64: "mouse",      65: "remote",     66: "keyboard",     67: "cell phone",
+        68: "microwave",  69: "oven",       70: "toaster",      71: "sink",
+        72: "refrigerator", 73: "book",     74: "clock",        75: "vase",
+        76: "scissors",   77: "teddy bear", 78: "hair drier",   79: "toothbrush",
+    }
+    # Map COCO names → AEGIS canonical target names
+    _ALIASES: dict = {
+        "car": "vehicle", "motorcycle": "vehicle",
+        "bus": "vehicle", "truck": "vehicle",
+    }
+
+    def __init__(
+        self,
+        model_path: str,
+        imgsz: int = 640,
+        iou_threshold: float = 0.45,
+    ) -> None:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3  # suppress verbose logs
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        self._sess       = ort.InferenceSession(model_path, sess_options=opts, providers=providers)
+        self._input_name = self._sess.get_inputs()[0].name
+        self._imgsz      = imgsz
+        self._iou        = iou_threshold
+
+        # Read class names from ONNX model metadata; fall back to COCO
+        meta = self._sess.get_modelmeta().custom_metadata_map
+        if "names" in meta:
+            import ast
+            raw: dict = ast.literal_eval(meta["names"])
+            base: dict = {int(k): str(v) for k, v in raw.items()}
+        else:
+            base = dict(self._COCO)
+        self.names: dict = {k: self._ALIASES.get(v, v) for k, v in base.items()}
+
+    # ------------------------------------------------------------------
+
+    def predict(
+        self,
+        source: "np.ndarray",
+        conf: float = 0.25,
+        verbose: bool = True,
+    ) -> list:
+        blob, pad_w, pad_h, new_w, new_h = self._letterbox(source)
+        outputs = self._sess.run(None, {self._input_name: blob})
+        boxes   = self._postprocess(outputs[0], conf, pad_w, pad_h, new_w, new_h)
+        return [_OnnxResult(boxes, self.names)]
+
+    def _letterbox(self, img: "np.ndarray") -> tuple:
+        """Letterbox-resize to (imgsz × imgsz); return blob + padding info."""
+        h, w   = img.shape[:2]
+        scale  = self._imgsz / max(h, w)
+        new_h  = int(h * scale)
+        new_w  = int(w * scale)
+        pad_h  = (self._imgsz - new_h) // 2
+        pad_w  = (self._imgsz - new_w) // 2
+        canvas = np.full((self._imgsz, self._imgsz, 3), 114, dtype=np.uint8)
+        canvas[pad_h: pad_h + new_h, pad_w: pad_w + new_w] = cv2.resize(img, (new_w, new_h))
+        blob   = (canvas[:, :, ::-1].astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis]
+        return blob, pad_w, pad_h, new_w, new_h
+
+    def _postprocess(
+        self,
+        pred: "np.ndarray",
+        conf_thresh: float,
+        pad_w: int,
+        pad_h: int,
+        new_w: int,
+        new_h: int,
+    ) -> list:
+        """Decode YOLOv8 raw output → list of _OnnxBox (normalised xyxy)."""
+        rows      = pred[0].T                       # (8400, 4+nc)
+        bxywh     = rows[:, :4]
+        cls_scores = rows[:, 4:]
+        confs     = cls_scores.max(axis=1)
+        cls_ids   = cls_scores.argmax(axis=1)
+
+        mask = confs >= conf_thresh
+        if not mask.any():
+            return []
+        bxywh, confs, cls_ids = bxywh[mask], confs[mask], cls_ids[mask]
+
+        # cx, cy, w, h → x1, y1, x2, y2  (letterboxed 640-px space)
+        x1 = bxywh[:, 0] - bxywh[:, 2] / 2
+        y1 = bxywh[:, 1] - bxywh[:, 3] / 2
+        x2 = bxywh[:, 0] + bxywh[:, 2] / 2
+        y2 = bxywh[:, 1] + bxywh[:, 3] / 2
+
+        keep = self._nms(np.stack([x1, y1, x2, y2], axis=1), confs, self._iou)
+
+        results: list = []
+        for i in keep:
+            # Undo letterbox padding → normalise to original image dims
+            nx1 = float(np.clip((x1[i] - pad_w) / new_w, 0.0, 1.0))
+            ny1 = float(np.clip((y1[i] - pad_h) / new_h, 0.0, 1.0))
+            nx2 = float(np.clip((x2[i] - pad_w) / new_w, 0.0, 1.0))
+            ny2 = float(np.clip((y2[i] - pad_h) / new_h, 0.0, 1.0))
+            results.append(_OnnxBox(int(cls_ids[i]), float(confs[i]), [nx1, ny1, nx2, ny2]))
+        return results
+
+    @staticmethod
+    def _nms(boxes: "np.ndarray", scores: "np.ndarray", iou_threshold: float = 0.45) -> list:
+        """Greedy NMS — pure NumPy, no torchvision required."""
+        x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep: list = []
+        while order.size:
+            i = int(order[0])
+            keep.append(i)
+            if order.size == 1:
+                break
+            ix1 = np.maximum(x1[i], x1[order[1:]])
+            iy1 = np.maximum(y1[i], y1[order[1:]])
+            ix2 = np.minimum(x2[i], x2[order[1:]])
+            iy2 = np.minimum(y2[i], y2[order[1:]])
+            inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
+            iou   = inter / (areas[i] + areas[order[1:]] - inter + 1e-9)
+            order = order[1:][iou <= iou_threshold]
+        return keep
+
+
+# ---------------------------------------------------------------------------
+# Best-Frame Selector
+# ---------------------------------------------------------------------------
+
+class BestFrameSelector:
+    """
+    Accumulates (frame, detections) pairs over a sliding time window.
+    When the window expires, returns the frame with the single highest-
+    confidence detection — the "sharpest" moment to send to Moondream.
+
+    This avoids flooding the VLM with every frame while ensuring the most
+    informative image is always chosen for reasoning.
+    """
+
+    def __init__(self, window_s: float = 5.0) -> None:
+        self._window_s = max(window_s, 0.5)
+        self._reset()
+
+    def _reset(self) -> None:
+        self._window_start: float = time.perf_counter()
+        self._best_conf: float = 0.0
+        self._best_frame: "np.ndarray | None" = None
+        self._best_detections: "list" = []
+
+    def update(
+        self,
+        frame: "np.ndarray",
+        detections: "list",
+    ) -> "tuple[np.ndarray, list] | None":
+        """
+        Feed a new frame.  Returns ``(best_frame, best_detections)`` when the
+        window expires and at least one detection was accumulated; else ``None``.
+        """
+        if detections:
+            peak_conf = max(d.confidence for d in detections)
+            if peak_conf > self._best_conf:
+                self._best_conf = peak_conf
+                self._best_frame = frame.copy()
+                self._best_detections = detections
+
+        now = time.perf_counter()
+        if now - self._window_start >= self._window_s:
+            result = (
+                (self._best_frame, self._best_detections)
+                if self._best_frame is not None
+                else None
+            )
+            self._reset()
+            return result
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +417,11 @@ class VisionNode:
         self._cap: cv2.VideoCapture | None = None
         self._frame_id: int = 0
         self._start_ts: float = time.perf_counter()
+
+        # Best-frame selector — picks peak-confidence frame per time window
+        _bfw = float(self._inf_cfg.get("best_frame_window_s", 5.0))
+        self._best_frame_sel = BestFrameSelector(window_s=_bfw)
+        self._snapshot_dir = Path(self._inf_cfg.get("snapshot_dir", "data/logs/snapshots"))
 
         # Optional integration components
         self._reasoning: "ReasoningNode | None" = reasoning_node
@@ -258,6 +509,21 @@ class VisionNode:
                     "Falling back to mock detections — check internet connectivity."
                 )
                 return
+
+        # ONNX path — no PyTorch/ultralytics required
+        if model_path.suffix == ".onnx":
+            if not _ONNX_AVAILABLE:
+                self.logger.warning(
+                    "[AEGIS] onnxruntime not installed — cannot load .onnx model. "
+                    "Install with: pip install onnxruntime"
+                )
+                return
+            iou   = float(self._inf_cfg.get("nms_iou_threshold", 0.45))
+            imgsz = int(self._inf_cfg.get("image_size", 640))
+            self.logger.info(f"[AEGIS] Loading ONNX model: {model_path}")
+            self._model = _OnnxModel(str(model_path), imgsz=imgsz, iou_threshold=iou)
+            self.logger.info("[AEGIS] ONNX model loaded — ACTIVE MODE (no PyTorch).")
+            return
 
         device = self._inf_cfg.get("device", "cpu")
         self.logger.info(f"[AEGIS] Loading YOLOv8 model: {model_path}  device={device}")
@@ -444,8 +710,8 @@ class VisionNode:
         """
         Executes YOLOv8 or returns Mock Data if in Simulation Mode.
         """
-        # 1. Real YOLO Inference
-        if self._model is not None and not self._sim_mode:
+        # 1. Real YOLO Inference — runs whenever a model is loaded (video file or live)
+        if self._model is not None:
             results = self._model.predict(source=frame, conf=self._conf_threshold, verbose=False)
             raw = []
             for r in results:
@@ -632,13 +898,16 @@ class VisionNode:
                 detections = self.detect(frame)
                 self._frame_id += 1
 
-                # --- STRATEGIC SUB-SAMPLING ---
-                # Only trigger reasoning if detections exist AND it's a specific frame interval
-                if detections and self._reasoning:
-                    # In Simulation: Reason only every 50th frame to prevent Swap flooding
-                    # In Live Mode: Reason every time a target is found (Sequential)
-                    if not self._sim_mode or (self._frame_id % 50 == 0):
-                        self._process_pipeline(frame, detections)
+                # --- BEST-FRAME SELECTION ---
+                # Feed every frame into BestFrameSelector. When the window expires
+                # (best_frame_window_s), send only the peak-confidence frame to
+                # Moondream — avoiding VLM flooding on every detection tick.
+                if self._reasoning:
+                    best = self._best_frame_sel.update(frame, detections)
+                    if best is not None:
+                        best_frame, best_dets = best
+                        if best_dets:
+                            self._process_pipeline(best_frame, best_dets)
 
                 yield detections
 
@@ -660,8 +929,19 @@ class VisionNode:
         detections: list["Detection"],
     ) -> None:
         """
-        Sequential execution: Freezes YOLO and calls Moondream for the first detected target.
+        Sequential execution: saves a best-frame snapshot then calls Moondream
+        for the highest-confidence target before syncing to cloud.
         """
+        # --- Save best-frame snapshot to disk ---
+        self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        best_det = max(detections, key=lambda d: d.confidence)
+        snap_name = f"best_{best_det.target_type}_{ts_tag}_conf{best_det.confidence:.2f}.jpg"
+        snap_path = self._snapshot_dir / snap_name
+        cv2.imwrite(str(snap_path), frame)
+        self.logger.info(f"[AEGIS] Best-frame snapshot → {snap_path}")
+        print(f"  📷 Snapshot saved: {snap_path}")
+
         reasoning_results: list[dict] = []
         aiops_snapshot: dict = detections[0].aiops_meta if detections else {}
 
@@ -717,9 +997,15 @@ if __name__ == "__main__":
     sync = CloudSync()
     node = VisionNode(reasoning_node=reasoning, cloud_sync=sync)
 
+    _vid = node._inf_cfg.get("sim_video_path", "synthetic frames")
+    _win = node._inf_cfg.get("best_frame_window_s", 5.0)
     print(f"\n{'='*70}")
     print("  AEGIS-Cloud — Integrated Edge Pipeline")
     print(f"  SIMULATION_MODE : {node._sim_mode}")
+    print(f"  Video source    : {_vid}")
+    print(f"  Target classes  : {node._target_classes}")
+    print(f"  Best-frame win  : {_win}s")
+    print(f"  Snapshot dir    : {node._snapshot_dir}")
     print(f"  Reasoning       : {reasoning.model}")
     print(f"  Cloud Sync      : {'SIM file' if sync._sim_mode else 'IoT Hub'}")
     print(f"{'='*70}\n")

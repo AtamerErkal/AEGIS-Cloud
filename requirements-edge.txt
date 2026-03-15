@@ -16,7 +16,8 @@
 
 # Core vision & inference
 opencv-python>=4.8.0          # Use opencv-python-headless on Jetson
-ultralytics>=8.0.0            # YOLOv8 (includes torch dependency)
+ultralytics>=8.0.0            # YOLOv8 — optional; only needed for .pt model loading
+onnxruntime>=1.16.0           # ONNX inference backend (no PyTorch required on Jetson Nano)
 numpy>=1.24.0
 
 # Configuration

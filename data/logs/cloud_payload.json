@@ -1,7 +1,7 @@
 {
   "schema_version": "1.1",
-  "message_id": 0,
-  "timestamp_utc": "2026-03-15T01:07:56.207733+00:00",
+  "message_id": 2,
+  "timestamp_utc": "2026-03-15T01:22:14.993832+00:00",
   "nato_metadata": {
     "station_id": "AEGIS-EDGE-001",
     "unit_designation": "DIEHL-GARMR-UNIT-1",
@@ -14,32 +14,44 @@
   },
   "detections": [
     {
+      "timestamp_utc": "2026-03-15T01:22:10Z",
+      "station_id": "AEGIS-EDGE-001",
+      "coordinates": {
+        "lat": 48.3984,
+        "lon": 10.0011
+      },
       "target_type": "drone",
-      "confidence": 0.92,
-      "risk_level": "Hostile",
+      "confidence": 0.88,
       "bbox": [
         0.3,
-        0.25,
-        0.55,
-        0.45
-      ]
+        0.3,
+        0.6,
+        0.6
+      ],
+      "risk_level": "Hostile",
+      "xai_stub": {
+        "reasoning_description": "[REASONING UNAVAILABLE \u2014 circuit-breaker open]",
+        "reasoning_inference_ms": 1.7699819999847932
+      },
+      "aiops_meta": {},
+      "frame_id": 54
     }
   ],
   "reasoning": [
     {
-      "detection_id": "test-frame-1",
+      "detection_id": "f54_1773537734",
       "status": "OK",
-      "description": "A small quadcopter approaching from the north at low altitude.",
+      "description": "[REASONING UNAVAILABLE \u2014 circuit-breaker open]",
       "model_used": "moondream",
-      "inference_time_ms": 1240.0
+      "inference_time_ms": 1.77
     }
   ],
   "hardware_telemetry": {
-    "cpu_percent": 2.4,
-    "gpu_temp_c": 78.0,
-    "ram_used_mb": 3200.0,
-    "latency_ms": 28.0,
-    "uptime_s": 0.0
+    "cpu_percent": null,
+    "gpu_temp_c": null,
+    "ram_used_mb": null,
+    "latency_ms": 0.0,
+    "uptime_s": 15.2
   },
   "azure_function_hints": {
     "priority": "HIGH",
