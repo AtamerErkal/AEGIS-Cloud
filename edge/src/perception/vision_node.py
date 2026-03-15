@@ -1011,10 +1011,14 @@ class VisionNode:
 if __name__ == "__main__":
     from edge.src.perception.reasoning_node import ReasoningNode
     from edge.src.comm.cloud_sync import CloudSync
+    from edge.src.sensors.servo_driver import PanTiltServoDriver
 
     reasoning = ReasoningNode()
     sync = CloudSync()
-    node = VisionNode(reasoning_node=reasoning, cloud_sync=sync)
+    servo = PanTiltServoDriver(yaml.safe_load(
+        open(CONFIG_PATH, encoding="utf-8")
+    ))
+    node = VisionNode(reasoning_node=reasoning, cloud_sync=sync, servo_node=servo)
 
     _vid = node._inf_cfg.get("sim_video_path", "synthetic frames")
     _win = node._inf_cfg.get("best_frame_window_s", 5.0)
