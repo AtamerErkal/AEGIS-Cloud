@@ -104,10 +104,31 @@ def test_angle_clamp():
 
 
 def test_self_test():
-    """Simülasyon modunda self_test() True dönmeli."""
-    print("\n[TEST 6] self_test() — simülasyon")
-    d = PanTiltServoDriver(CFG)
-    return _ok("self_test() == True", d.self_test() is True)
+    """
+    Gerçek donanım self_test() — PCA9685 bağlıysa fiziksel sweep yapar.
+
+    Durum 1 — adafruit-servokit kurulu DEĞİL veya PCA9685 bağlı DEĞİL:
+        Driver otomatik olarak simülasyona düşer → self_test() True döner.
+        Nano'ya bağlanmadan CI/CD'de de geçer.
+
+    Durum 2 — PCA9685 I²C'de mevcut (Nano + bağlı donanım):
+        Gerçek ±15° sweep testi yapılır → self_test() True döner.
+        Servo kablolarını kontrol et: VCC, GND, SDA, SCL.
+    """
+    print("\n[TEST 6] self_test() — gerçek donanım (simulation_mode=False)")
+
+    hw_cfg = {**CFG, "simulation_mode": False}  # donanım modu
+    d = PanTiltServoDriver(hw_cfg)
+
+    if d._sim:
+        # Kütüphane yok veya I²C init başarısız → sim'e düştü
+        print("    ℹ  adafruit-servokit yok veya PCA9685 bağlı değil → sim fallback")
+        return _ok("self_test() == True (sim fallback)", d.self_test() is True)
+    else:
+        # Gerçek donanım — fiziksel sweep
+        print("    ⚙  PCA9685 bağlandı → fiziksel sweep testi")
+        result = d.self_test()
+        return _ok(f"self_test() == True (hardware)", result is True)
 
 
 def test_read_keys():
