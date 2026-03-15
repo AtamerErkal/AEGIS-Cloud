@@ -40,6 +40,24 @@ inference:
   target_fps: 1                               # [AIOPS FIX] Reduced to 1 FPS to prevent frame queuing while VLM is reasoning
 
 # ---------------------------------------------------------------------------
+# CAMERA  (IMX219 / Sony v2 CSI — Jetson Nano GStreamer pipeline)
+# ---------------------------------------------------------------------------
+# Set use_gstreamer: true ONLY after the IMX219 hardware is physically
+# connected and calibrated. While false, live mode falls back to the
+# simulation video path (hardware-free CI/CD is preserved).
+# ---------------------------------------------------------------------------
+camera:
+  use_gstreamer: false           # HARDWARE FLAG — flip to true on camera arrival
+  sensor_id: 0                   # CSI port index (0 = primary)
+  capture_width: 1920            # IMX219 native capture width (px)
+  capture_height: 1080           # IMX219 native capture height (px)
+  output_width: 640              # Downscaled output width fed to YOLOv8 (px)
+  output_height: 360             # Downscaled output height fed to YOLOv8 (px)
+  framerate: 30                  # Camera framerate (fps)
+  flip_method: 0                 # nvvidconv: 0=none, 2=180°, 4=horiz-flip
+  drop_frames: true              # appsink: drop stale frames under load
+
+# ---------------------------------------------------------------------------
 # REASONING  (Moondream Multimodal LLM via Ollama)
 # ---------------------------------------------------------------------------
 # Moondream is a 1.6B-parameter vision-language model optimised for

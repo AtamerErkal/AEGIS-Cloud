@@ -32,4 +32,6 @@
 # Article 12 requirements for high-risk AI systems.
 #
 # --- Log entries below this line ---
-2026-03-14T21:37:21.707750+00:00 | HITL_APPROVAL | TEST-001 | Hostile | conf=0.9100 | human_decision=approved | xai={"detection_id":"TEST-001","timestamp_utc":"2026-03-14T21:37:21.707750+00:00","classification":"Hostile","confidence":0.91,"shap_summary":{"top_features":[{"feature":"detection_confidence","value":0.91,"attribution":0.164},{"feature":"bbox_area","value":0.09,"attribution":0.082},{"feature":"region_contrast","value":0.3339,"attribution":0.082},{"feature":"centre_proximity","value":0.9,"attribution":0.041},{"feature":"aspect_ratio","value":1.0,"attribution":0.041}],"base_value":0.5,"explanation":"Classification 'Hostile' (conf=0.91) driven primarily by 'detection_confidence' (attribution=+0.1640). Base prior: 0.50."},"rag_citations":[],"model_versions":{"yolo":"yolov8n-aegis-v1.0","vanguard":"n/a","llava":"moondream2-aegis-v1.0"},"human_decision":"approved","grad_cam_ref":"heatmap:TEST-001"}
+2026-03-14T20:30:12.569139+00:00 | PENDING_APPROVAL | vibration_anomaly | cmd_id=cmd-8cba18c7 | value=3.8 | corrective_rpm=5064 | human_decision=AWAITING
+2026-03-14T20:47:19.629401+00:00 | PENDING_APPROVAL | vibration_anomaly | cmd_id=cmd-155be220 | value=3.8 | corrective_rpm=5064 | human_decision=AWAITING
+2026-03-14T20:47:19.629672+00:00 | XAI_EVIDENCE | Hostile | conf=0.89 | compliant=True | shap=stub | grad_cam=stub | audit_hash=65f7eb16bc453ad1... | human_decision=APPROVED
