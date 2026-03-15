@@ -24,20 +24,25 @@ nato_log_format: true          # Enforce NATO Incident Report log lines
 # ---------------------------------------------------------------------------
 inference:
   model_path: "edge/models/yolov8n.pt"    # Ultralytics .pt or .engine
-  confidence_threshold: 0.75                  # [AIOPS FIX] Increased to 0.75 so we don't spam the VLM
   nms_iou_threshold: 0.45                     # Non-max suppression IoU cutoff
   target_classes:                             # Filter: only report these labels
     - "person"
     - "drone"
     - "vehicle"
+    - "ship"
+    - "boat"
   device: "cuda"                              # "cuda" | "cpu" | "0" (GPU idx)
   image_size: 640                             # Inference resolution (px)
+  confidence_threshold: 0.45                  # Lowered for maritime targets (ship/boat harder to detect)
   grad_cam_enabled: true                      # XAI: generate heatmap stubs
   grad_cam_trigger: "Hostile"                 # Only generate for risk level
   # Simulation sources
-  sim_video_path: "data/sim_samples/drone_flyby.mp4"
+  sim_video_path: "data/sim_samples/test_video.mp4"
   sim_fallback_color: [0, 128, 255]           # BGR placeholder frame colour
-  target_fps: 1                               # [AIOPS FIX] Reduced to 1 FPS to prevent frame queuing while VLM is reasoning
+  target_fps: 5                               # 5 FPS for video file scanning (faster than live reasoning mode)
+  # Best-frame selection: accumulate detections over a window, snapshot the peak frame
+  best_frame_window_s: 5.0                    # Seconds to collect frames before picking best
+  snapshot_dir: "data/logs/snapshots"         # Directory for saved best-frame JPEGs
 
 # ---------------------------------------------------------------------------
 # CAMERA  (IMX219 / Sony v2 CSI — Jetson Nano GStreamer pipeline)

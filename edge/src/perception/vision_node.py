@@ -90,7 +90,61 @@ _RISK_MAP: dict[str, str] = {
     "drone":   "Hostile",
     "person":  "Unknown",
     "vehicle": "Unknown",
+    "ship":    "Unknown",   # Maritime target — requires Moondream evaluation to upgrade
+    "boat":    "Unknown",
 }
+
+
+# ---------------------------------------------------------------------------
+# Best-Frame Selector
+# ---------------------------------------------------------------------------
+
+class BestFrameSelector:
+    """
+    Accumulates (frame, detections) pairs over a sliding time window.
+    When the window expires, returns the frame with the single highest-
+    confidence detection — the "sharpest" moment to send to Moondream.
+
+    This avoids flooding the VLM with every frame while ensuring the most
+    informative image is always chosen for reasoning.
+    """
+
+    def __init__(self, window_s: float = 5.0) -> None:
+        self._window_s = max(window_s, 0.5)
+        self._reset()
+
+    def _reset(self) -> None:
+        self._window_start: float = time.perf_counter()
+        self._best_conf: float = 0.0
+        self._best_frame: "np.ndarray | None" = None
+        self._best_detections: "list" = []
+
+    def update(
+        self,
+        frame: "np.ndarray",
+        detections: "list",
+    ) -> "tuple[np.ndarray, list] | None":
+        """
+        Feed a new frame.  Returns ``(best_frame, best_detections)`` when the
+        window expires and at least one detection was accumulated; else ``None``.
+        """
+        if detections:
+            peak_conf = max(d.confidence for d in detections)
+            if peak_conf > self._best_conf:
+                self._best_conf = peak_conf
+                self._best_frame = frame.copy()
+                self._best_detections = detections
+
+        now = time.perf_counter()
+        if now - self._window_start >= self._window_s:
+            result = (
+                (self._best_frame, self._best_detections)
+                if self._best_frame is not None
+                else None
+            )
+            self._reset()
+            return result
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +225,11 @@ class VisionNode:
         self._cap: cv2.VideoCapture | None = None
         self._frame_id: int = 0
         self._start_ts: float = time.perf_counter()
+
+        # Best-frame selector — picks peak-confidence frame per time window
+        _bfw = float(self._inf_cfg.get("best_frame_window_s", 5.0))
+        self._best_frame_sel = BestFrameSelector(window_s=_bfw)
+        self._snapshot_dir = Path(self._inf_cfg.get("snapshot_dir", "data/logs/snapshots"))
 
         # Optional integration components
         self._reasoning: "ReasoningNode | None" = reasoning_node
@@ -444,8 +503,8 @@ class VisionNode:
         """
         Executes YOLOv8 or returns Mock Data if in Simulation Mode.
         """
-        # 1. Real YOLO Inference
-        if self._model is not None and not self._sim_mode:
+        # 1. Real YOLO Inference — runs whenever a model is loaded (video file or live)
+        if self._model is not None:
             results = self._model.predict(source=frame, conf=self._conf_threshold, verbose=False)
             raw = []
             for r in results:
@@ -632,13 +691,16 @@ class VisionNode:
                 detections = self.detect(frame)
                 self._frame_id += 1
 
-                # --- STRATEGIC SUB-SAMPLING ---
-                # Only trigger reasoning if detections exist AND it's a specific frame interval
-                if detections and self._reasoning:
-                    # In Simulation: Reason only every 50th frame to prevent Swap flooding
-                    # In Live Mode: Reason every time a target is found (Sequential)
-                    if not self._sim_mode or (self._frame_id % 50 == 0):
-                        self._process_pipeline(frame, detections)
+                # --- BEST-FRAME SELECTION ---
+                # Feed every frame into BestFrameSelector. When the window expires
+                # (best_frame_window_s), send only the peak-confidence frame to
+                # Moondream — avoiding VLM flooding on every detection tick.
+                if self._reasoning:
+                    best = self._best_frame_sel.update(frame, detections)
+                    if best is not None:
+                        best_frame, best_dets = best
+                        if best_dets:
+                            self._process_pipeline(best_frame, best_dets)
 
                 yield detections
 
@@ -660,8 +722,19 @@ class VisionNode:
         detections: list["Detection"],
     ) -> None:
         """
-        Sequential execution: Freezes YOLO and calls Moondream for the first detected target.
+        Sequential execution: saves a best-frame snapshot then calls Moondream
+        for the highest-confidence target before syncing to cloud.
         """
+        # --- Save best-frame snapshot to disk ---
+        self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+        ts_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        best_det = max(detections, key=lambda d: d.confidence)
+        snap_name = f"best_{best_det.target_type}_{ts_tag}_conf{best_det.confidence:.2f}.jpg"
+        snap_path = self._snapshot_dir / snap_name
+        cv2.imwrite(str(snap_path), frame)
+        self.logger.info(f"[AEGIS] Best-frame snapshot → {snap_path}")
+        print(f"  📷 Snapshot saved: {snap_path}")
+
         reasoning_results: list[dict] = []
         aiops_snapshot: dict = detections[0].aiops_meta if detections else {}
 
@@ -717,9 +790,15 @@ if __name__ == "__main__":
     sync = CloudSync()
     node = VisionNode(reasoning_node=reasoning, cloud_sync=sync)
 
+    _vid = node._inf_cfg.get("sim_video_path", "synthetic frames")
+    _win = node._inf_cfg.get("best_frame_window_s", 5.0)
     print(f"\n{'='*70}")
     print("  AEGIS-Cloud — Integrated Edge Pipeline")
     print(f"  SIMULATION_MODE : {node._sim_mode}")
+    print(f"  Video source    : {_vid}")
+    print(f"  Target classes  : {node._target_classes}")
+    print(f"  Best-frame win  : {_win}s")
+    print(f"  Snapshot dir    : {node._snapshot_dir}")
     print(f"  Reasoning       : {reasoning.model}")
     print(f"  Cloud Sync      : {'SIM file' if sync._sim_mode else 'IoT Hub'}")
     print(f"{'='*70}\n")
