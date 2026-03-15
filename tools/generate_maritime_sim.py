@@ -8,7 +8,8 @@ Scene:
   - Animated sea surface (gradient + wave texture)
   - 2 civilian vessels (brown/white, small-medium)
   - 1 military warship (grey, large, with mast and radar)
-  - Drone gimbal motion (slow pan)
+  - Drone gimbal: dynamic pan/tilt scan (NOT fixed at 90°)
+  - FOV search area drawn on screen as semi-transparent overlay
 
 Output: data/sim_samples/maritime_sim.mp4
 """
@@ -31,9 +32,10 @@ OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 writer = cv2.VideoWriter(str(OUT_PATH), fourcc, FPS, (W, H))
 
-
 # ── Sea background helpers ────────────────────────────────────────────────────
 _RNG = np.random.default_rng(42)
+SKY_H   = int(H * 0.40)   # y coordinate of horizon line
+SEA_MID = SKY_H + (H - SKY_H) // 2
 
 
 def make_sea(frame_idx: int) -> np.ndarray:
@@ -41,17 +43,16 @@ def make_sea(frame_idx: int) -> np.ndarray:
     base = np.zeros((H, W, 3), dtype=np.uint8)
 
     # Sky gradient (top 40%)
-    sky_h = int(H * 0.40)
-    for y in range(sky_h):
-        t = y / sky_h
+    for y in range(SKY_H):
+        t = y / SKY_H
         r = int(100 + 40 * t)
         g = int(140 + 40 * t)
         b = int(180 + 50 * t)
         base[y, :] = (b, g, r)
 
     # Sea gradient (bottom 60%)
-    for y in range(sky_h, H):
-        t = (y - sky_h) / (H - sky_h)
+    for y in range(SKY_H, H):
+        t = (y - SKY_H) / (H - SKY_H)
         r = int(20 + 10 * t)
         g = int(50 + 30 * t)
         b = int(80 + 40 * t)
@@ -59,8 +60,8 @@ def make_sea(frame_idx: int) -> np.ndarray:
 
     # Wave ripples using sine
     phase = frame_idx * 0.08
-    for row_off in range(0, H - sky_h, 18):
-        y = sky_h + row_off
+    for row_off in range(0, H - SKY_H, 18):
+        y = SKY_H + row_off
         if y >= H:
             break
         amplitude = 1.5 + row_off * 0.003
@@ -72,14 +73,14 @@ def make_sea(frame_idx: int) -> np.ndarray:
             ).astype(np.uint8)
 
     # Horizon line
-    cv2.line(base, (0, sky_h), (W, sky_h), (160, 170, 180), 1)
+    cv2.line(base, (0, SKY_H), (W, SKY_H), (160, 170, 180), 1)
     return base
 
 
 # ── Vessel drawing helpers ────────────────────────────────────────────────────
 
-def draw_civilian_vessel(img, cx, cy, length, heading_deg=180):
-    """Small fishing/cargo boat — brown hull, white superstructure."""
+def draw_civilian_vessel(img, cx, cy, length):
+    """Small fishing/cargo boat — dark hull, grey superstructure."""
     half_l = length // 2
     half_w = max(4, length // 6)
 
@@ -90,9 +91,9 @@ def draw_civilian_vessel(img, cx, cy, length, heading_deg=180):
         [cx + half_l - 4,  cy + half_w],
         [cx - half_l,      cy + half_w],
     ], dtype=np.int32)
-    cv2.fillPoly(img, [pts_hull], (30, 60, 120))   # dark hull
+    cv2.fillPoly(img, [pts_hull], (30, 60, 120))
 
-    # Superstructure (small white box)
+    # Superstructure
     sx = cx - half_l // 4
     sw = half_l // 3
     sh = half_w
@@ -107,7 +108,6 @@ def draw_warship(img, cx, cy, length):
     half_l = length // 2
     half_w = max(8, length // 8)
 
-    # Hull
     pts_hull = np.array([
         [cx - half_l,          cy - half_w],
         [cx + half_l - 6,      cy - half_w],
@@ -115,22 +115,21 @@ def draw_warship(img, cx, cy, length):
         [cx + half_l - 6,      cy + half_w],
         [cx - half_l,          cy + half_w],
     ], dtype=np.int32)
-    cv2.fillPoly(img, [pts_hull], (80, 80, 80))    # grey hull
+    cv2.fillPoly(img, [pts_hull], (80, 80, 80))
 
-    # Superstructure block
+    # Superstructure
     sx = cx - half_l // 3
     cv2.rectangle(img, (sx, cy - half_w - half_w // 2),
                   (sx + half_l // 2, cy + half_w // 2), (100, 100, 100), -1)
 
-    # Radar mast (tall)
+    # Radar mast
     mast_x = cx - half_l // 6
     cv2.line(img, (mast_x, cy - half_w - half_w // 2),
              (mast_x, cy - half_w - half_w // 2 - 22), (140, 140, 140), 2)
-    # Radar dish
     cv2.ellipse(img, (mast_x, cy - half_w - half_w // 2 - 22),
                 (8, 4), 0, 0, 180, (160, 160, 160), 1)
 
-    # Gun turret silhouette
+    # Gun turret
     turret_x = cx + half_l // 4
     cv2.circle(img, (turret_x, cy - half_w // 2), 5, (60, 60, 60), -1)
     cv2.line(img, (turret_x, cy - half_w // 2),
@@ -141,25 +140,127 @@ def draw_warship(img, cx, cy, length):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1)
 
 
-def draw_horizon_haze(img, sky_h):
+def draw_horizon_haze(img):
     """Subtle haze band at horizon."""
     haze = img.copy()
-    cv2.rectangle(haze, (0, sky_h - 8), (W, sky_h + 8), (180, 185, 190), -1)
+    cv2.rectangle(haze, (0, SKY_H - 8), (W, SKY_H + 8), (180, 185, 190), -1)
     cv2.addWeighted(haze, 0.15, img, 0.85, 0, img)
 
 
-# ── Vessel trajectories ───────────────────────────────────────────────────────
-# Each vessel: (start_cx, cy, end_cx, length, is_military)
-SKY_H   = int(H * 0.40)
-SEA_MID = SKY_H + (H - SKY_H) // 2
+# ── Camera model ──────────────────────────────────────────────────────────────
+# pan  : horizontal rotation (0–180°, 90° = straight ahead)
+# elev : elevation angle (0° = horizontal, 90° = straight down)
+#
+# Search pattern: pan sweeps left-right while elev oscillates 30°–70°.
+# This ensures the camera looks FORWARD (toward horizon) and sweeps the sea.
 
+def camera_angles(fi: int):
+    """Return (pan_deg, elev_deg) for this frame."""
+    t = fi / N_FRAMES
+    # Pan: ±35° sweep around centre (90°), period ~8 s
+    pan  = 90 + 35 * math.sin(2 * math.pi * t * (DURATION / 8))
+    # Elevation: 30°–70° — never goes to 90° (straight down)
+    elev = 50 + 20 * math.sin(2 * math.pi * t * (DURATION / 12) + 0.8)
+    return pan, elev
+
+
+# ── FOV projection helpers ────────────────────────────────────────────────────
+# Map camera angles to a trapezoid on the 2-D frame.
+#
+# elev=30° → looking nearly horizontal → FOV spans upper sea (near horizon)
+# elev=70° → looking steeply down     → FOV spans lower sea (close range)
+#
+# The trapezoid is drawn semi-transparently in green.
+
+FOV_H_DEG = 55   # horizontal field-of-view (degrees)
+FOV_V_DEG = 40   # vertical field-of-view (degrees)
+
+
+def fov_trapezoid(pan_deg: float, elev_deg: float):
+    """
+    Return the 4 corners of the FOV trapezoid in screen pixels.
+
+    Returns list of (x, y) tuples: [top-left, top-right, bot-right, bot-left]
+    """
+    sea_top = SKY_H          # y of horizon
+    sea_bot = H              # y of bottom edge
+
+    # Elevation → vertical extent in the sea strip
+    # elev 30° → far/top of sea (y ≈ sea_top + small margin)
+    # elev 70° → near/bottom of sea (y ≈ sea_bot - small margin)
+    norm_elev = (elev_deg - 30) / 40   # 0.0 at 30°, 1.0 at 70°
+    norm_elev = max(0.0, min(1.0, norm_elev))
+
+    sea_range = sea_bot - sea_top
+    # Centre of FOV on y axis
+    fov_cy = sea_top + int(sea_range * (0.15 + 0.60 * norm_elev))
+    # Half-height of FOV: taller at low elevation (far view), shorter at high
+    half_h = int(sea_range * (0.30 - 0.10 * norm_elev))
+    top_y = max(sea_top + 2, fov_cy - half_h)
+    bot_y = min(sea_bot - 2, fov_cy + half_h)
+
+    # Pan → horizontal offset
+    norm_pan = (pan_deg - 90) / 90     # -1.0 to +1.0
+    cx = W // 2 + int(norm_pan * W * 0.28)
+
+    # Width: wider at closer range (high elev), narrower at far (perspective)
+    half_w_top = int(W * (0.18 + 0.04 * norm_elev))
+    half_w_bot = int(W * (0.28 + 0.06 * norm_elev))
+
+    return [
+        (cx - half_w_top, top_y),
+        (cx + half_w_top, top_y),
+        (cx + half_w_bot, bot_y),
+        (cx - half_w_bot, bot_y),
+    ]
+
+
+def point_in_poly(px: int, py: int, poly) -> bool:
+    """Ray-casting point-in-polygon test."""
+    n = len(poly)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > py) != (yj > py)) and (
+            px < (xj - xi) * (py - yi) / (yj - yi) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def draw_fov_overlay(img: np.ndarray, poly, any_target: bool) -> None:
+    """Draw the semi-transparent FOV trapezoid on the image."""
+    pts = np.array(poly, dtype=np.int32)
+
+    # Fill — green tint (darker when no target, bright when target acquired)
+    overlay = img.copy()
+    colour = (0, 180, 0) if any_target else (0, 100, 40)
+    cv2.fillPoly(overlay, [pts], colour)
+    cv2.addWeighted(overlay, 0.18, img, 0.82, 0, img)
+
+    # Border
+    border_col = (0, 255, 80) if any_target else (0, 160, 60)
+    cv2.polylines(img, [pts], isClosed=True, color=border_col, thickness=2,
+                  lineType=cv2.LINE_AA)
+
+    # Corner tick marks
+    tick = 8
+    for (x, y) in poly:
+        cv2.line(img, (x - tick, y), (x + tick, y), border_col, 1)
+        cv2.line(img, (x, y - tick), (x, y + tick), border_col, 1)
+
+
+# ── Vessel trajectories ───────────────────────────────────────────────────────
 VESSELS = [
-    # Civilian 1 — small, far away (near horizon, small)
-    {"start": -80,  "end": W + 80,  "y": SKY_H + 55,  "length": 45,  "mil": False, "speed": 1.5},
+    # Civilian 1 — small, near horizon
+    {"start": -80,  "end": W + 80,  "y": SKY_H + 55,  "length": 45,  "mil": False, "speed": 1.5, "label": "CIVILIAN-A"},
     # Civilian 2 — medium, mid distance
-    {"start": W + 100, "end": -100, "y": SKY_H + 140, "length": 65,  "mil": False, "speed": 1.2},
-    # Warship — large, appears from right at frame 200, moves left
-    {"start": W + 180, "end": 200,  "y": SKY_H + 200, "length": 160, "mil": True,  "speed": 0.6},
+    {"start": W + 100, "end": -100, "y": SKY_H + 140, "length": 65,  "mil": False, "speed": 1.2, "label": "CIVILIAN-B"},
+    # Warship — large, enters from right at ~frame 180
+    {"start": W + 180, "end": 200,  "y": SKY_H + 200, "length": 160, "mil": True,  "speed": 0.6, "label": "WARSHIP F-511"},
 ]
 
 
@@ -167,25 +268,81 @@ VESSELS = [
 print(f"Generating {N_FRAMES} frames → {OUT_PATH} ...")
 for fi in range(N_FRAMES):
     sea = make_sea(fi)
-    draw_horizon_haze(sea, SKY_H)
+    draw_horizon_haze(sea)
 
+    # Compute camera angles for this frame
+    pan_deg, elev_deg = camera_angles(fi)
+
+    # Compute FOV trapezoid
+    fov_poly = fov_trapezoid(pan_deg, elev_deg)
+
+    # Build vessel positions for this frame
+    vessel_positions = []
     for v in VESSELS:
-        t = fi / N_FRAMES
-        cx = int(v["start"] + (v["end"] - v["start"]) * t * (v["speed"] * N_FRAMES / N_FRAMES * 1.0))
-        # More natural: linear interpolation driven by speed
         cx = int(v["start"] + (v["end"] - v["start"]) * (fi * v["speed"] / N_FRAMES))
         cy = v["y"]
         if cx < -300 or cx > W + 300:
             continue
-        if v["mil"]:
-            draw_warship(sea, cx, cy, v["length"])
-        else:
-            draw_civilian_vessel(sea, cx, cy, v["length"])
+        in_fov = point_in_poly(cx, cy, fov_poly)
+        vessel_positions.append({**v, "cx": cx, "cy": cy, "in_fov": in_fov})
 
-    # Overlay: minimal HUD (timestamp + lat/lon)
-    ts = f"AEGIS-MARITIME-001  |  {fi // FPS:02d}s  |  37.915N 26.340E  ALT 120m"
-    cv2.putText(sea, ts, (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                0.42, (180, 220, 255), 1, cv2.LINE_AA)
+    # Check if any vessel is in FOV
+    any_target = any(vp["in_fov"] for vp in vessel_positions)
+
+    # Draw FOV overlay (behind vessels)
+    draw_fov_overlay(sea, fov_poly, any_target)
+
+    # Draw vessels
+    for vp in vessel_positions:
+        cx, cy = vp["cx"], vp["cy"]
+        if vp["mil"]:
+            draw_warship(sea, cx, cy, vp["length"])
+        else:
+            draw_civilian_vessel(sea, cx, cy, vp["length"])
+
+        if vp["in_fov"]:
+            # Detection box
+            hl = vp["length"] // 2
+            hw = max(8, vp["length"] // 8) + 4
+            box_col = (0, 60, 220) if vp["mil"] else (0, 200, 80)
+            cv2.rectangle(sea,
+                          (cx - hl - 4, cy - hw - 18),
+                          (cx + hl + 4, cy + hw + 4),
+                          box_col, 2)
+            # Label
+            label = vp["label"]
+            cv2.putText(sea, label,
+                        (cx - hl - 2, cy - hw - 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38,
+                        box_col, 1, cv2.LINE_AA)
+
+    # ── HUD ──────────────────────────────────────────────────────────────────
+    # Top-left: camera state
+    hud_lines = [
+        f"PAN  {pan_deg:5.1f} deg",
+        f"ELEV {elev_deg:5.1f} deg",
+        f"ALT  120 m",
+    ]
+    for i, line in enumerate(hud_lines):
+        cv2.putText(sea, line, (12, 22 + i * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 220, 255), 1, cv2.LINE_AA)
+
+    # Top-right: status
+    status_text = "TARGET ACQUIRED" if any_target else "SEARCHING..."
+    status_col  = (0, 255, 100) if any_target else (0, 180, 220)
+    (tw, _), _ = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+    cv2.putText(sea, status_text, (W - tw - 12, 22),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.50, status_col, 1, cv2.LINE_AA)
+
+    # FOV label at top of trapezoid
+    fov_tx, fov_ty = fov_poly[0]
+    cv2.putText(sea, "[ SEARCH AREA ]", (fov_tx + 4, fov_ty - 6),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 210, 80), 1, cv2.LINE_AA)
+
+    # Bottom: timestamp bar
+    ts = f"AEGIS-MARITIME-001  |  {fi // FPS:02d}s  |  37.915N 26.340E"
+    cv2.putText(sea, ts, (10, H - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 220, 255), 1, cv2.LINE_AA)
 
     writer.write(sea)
     if fi % 50 == 0:
