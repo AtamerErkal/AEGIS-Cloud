@@ -25,8 +25,12 @@ import numpy as np
 OUT_PATH = Path("data/sim_samples/maritime_sim.mp4")
 W, H     = 1280, 720
 FPS      = 25
-DURATION = 30          # seconds
+DURATION = 15          # seconds
 N_FRAMES = FPS * DURATION
+
+# Pan world scale: how many pixels a vessel shifts per degree of pan
+# Camera looks right → vessels shift left (natural projection)
+PAN_WORLD_SCALE = 6
 
 OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -176,9 +180,23 @@ FOV_H_DEG = 55   # horizontal field-of-view (degrees)
 FOV_V_DEG = 40   # vertical field-of-view (degrees)
 
 
+def world_to_screen_x(world_x: int, pan_deg: float) -> int:
+    """Project world-x to screen-x based on camera pan angle.
+
+    Camera panning right (pan > 90°) shifts the world left on screen.
+    This keeps the FOV centred on screen while vessels move naturally.
+    """
+    pan_offset = (pan_deg - 90) * PAN_WORLD_SCALE
+    return world_x - int(pan_offset)
+
+
 def fov_trapezoid(pan_deg: float, elev_deg: float):
     """
     Return the 4 corners of the FOV trapezoid in screen pixels.
+
+    The FOV is always centred horizontally on screen (cx = W//2).
+    Pan movement is reflected by shifting vessel positions, NOT the FOV box,
+    so detection and visual overlap are always consistent.
 
     Returns list of (x, y) tuples: [top-left, top-right, bot-right, bot-left]
     """
@@ -186,22 +204,17 @@ def fov_trapezoid(pan_deg: float, elev_deg: float):
     sea_bot = H              # y of bottom edge
 
     # Elevation → vertical extent in the sea strip
-    # elev 30° → far/top of sea (y ≈ sea_top + small margin)
-    # elev 70° → near/bottom of sea (y ≈ sea_bot - small margin)
     norm_elev = (elev_deg - 30) / 40   # 0.0 at 30°, 1.0 at 70°
     norm_elev = max(0.0, min(1.0, norm_elev))
 
     sea_range = sea_bot - sea_top
-    # Centre of FOV on y axis
     fov_cy = sea_top + int(sea_range * (0.15 + 0.60 * norm_elev))
-    # Half-height of FOV: taller at low elevation (far view), shorter at high
     half_h = int(sea_range * (0.30 - 0.10 * norm_elev))
     top_y = max(sea_top + 2, fov_cy - half_h)
     bot_y = min(sea_bot - 2, fov_cy + half_h)
 
-    # Pan → horizontal offset
-    norm_pan = (pan_deg - 90) / 90     # -1.0 to +1.0
-    cx = W // 2 + int(norm_pan * W * 0.28)
+    # FOV centre is always the screen centre — pan is handled by vessel projection
+    cx = W // 2
 
     # Width: wider at closer range (high elev), narrower at far (perspective)
     half_w_top = int(W * (0.18 + 0.04 * norm_elev))
@@ -255,12 +268,15 @@ def draw_fov_overlay(img: np.ndarray, poly, any_target: bool) -> None:
 
 # ── Vessel trajectories ───────────────────────────────────────────────────────
 VESSELS = [
-    # Civilian 1 — small, near horizon
-    {"start": -80,  "end": W + 80,  "y": SKY_H + 55,  "length": 45,  "mil": False, "speed": 1.5, "label": "CIVILIAN-A"},
-    # Civilian 2 — medium, mid distance
-    {"start": W + 100, "end": -100, "y": SKY_H + 140, "length": 65,  "mil": False, "speed": 1.2, "label": "CIVILIAN-B"},
-    # Warship — large, enters from right at ~frame 180
-    {"start": W + 180, "end": 200,  "y": SKY_H + 200, "length": 160, "mil": True,  "speed": 0.6, "label": "WARSHIP F-511"},
+    # world_start / world_end are WORLD coordinates (pan-independent).
+    # screen_x = world_x - (pan_deg - 90) * PAN_WORLD_SCALE
+
+    # Civilian 1 — small, near horizon, left-to-right
+    {"world_start": -60,   "world_end": W + 60,  "y": SKY_H + 55,  "length": 45,  "mil": False, "speed": 2.5, "label": "CIVILIAN-A"},
+    # Civilian 2 — medium, mid distance, right-to-left
+    {"world_start": W + 60,"world_end": -60,      "y": SKY_H + 140, "length": 65,  "mil": False, "speed": 2.0, "label": "CIVILIAN-B"},
+    # Warship — large, enters from right, reaches centre by ~8 s
+    {"world_start": W + 80,"world_end": 220,      "y": SKY_H + 200, "length": 160, "mil": True,  "speed": 2.0, "label": "WARSHIP F-511"},
 ]
 
 
@@ -279,12 +295,18 @@ for fi in range(N_FRAMES):
     # Build vessel positions for this frame
     vessel_positions = []
     for v in VESSELS:
-        cx = int(v["start"] + (v["end"] - v["start"]) * (fi * v["speed"] / N_FRAMES))
+        # World coordinate (pan-independent trajectory)
+        progress = min(fi * v["speed"] / N_FRAMES, 1.0)
+        world_cx = int(v["world_start"] + (v["world_end"] - v["world_start"]) * progress)
+        # Project to screen using current camera pan
+        screen_cx = world_to_screen_x(world_cx, pan_deg)
         cy = v["y"]
-        if cx < -300 or cx > W + 300:
+        if screen_cx < -300 or screen_cx > W + 300:
             continue
-        in_fov = point_in_poly(cx, cy, fov_poly)
-        vessel_positions.append({**v, "cx": cx, "cy": cy, "in_fov": in_fov})
+        # Detection: vessel must be visually ON screen AND inside the FOV polygon
+        on_screen = -10 <= screen_cx <= W + 10
+        in_fov = on_screen and point_in_poly(screen_cx, cy, fov_poly)
+        vessel_positions.append({**v, "cx": screen_cx, "cy": cy, "in_fov": in_fov})
 
     # Check if any vessel is in FOV
     any_target = any(vp["in_fov"] for vp in vessel_positions)
