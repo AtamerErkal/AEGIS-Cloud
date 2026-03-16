@@ -129,15 +129,22 @@ except Exception as _e_vlm:
 
 def _vlm_worker(frame: np.ndarray, bbox: list, det_id: str) -> None:
     """Background thread: calls Moondream and updates _vlm_state."""
-    result = _reasoning.describe(frame=frame, bbox=bbox, detection_id=det_id)
-    risk   = _VisionNode._parse_risk_from_description(result.description)
-    with _vlm_lock:
-        _vlm_state["busy"]        = False
-        _vlm_state["description"] = result.description
-        _vlm_state["risk"]        = risk
-        _vlm_state["latency_ms"]  = result.inference_time_ms
-    print(f"\n[VLM] {result.description[:150]}")
-    print(f"[VLM] Risk → {risk}  ({result.inference_time_ms:.0f}ms)\n")
+    try:
+        result = _reasoning.describe(frame=frame, bbox=bbox, detection_id=det_id)
+        risk   = _VisionNode._parse_risk_from_description(result.description)
+        with _vlm_lock:
+            _vlm_state["busy"]        = False
+            _vlm_state["description"] = result.description
+            _vlm_state["risk"]        = risk
+            _vlm_state["latency_ms"]  = result.inference_time_ms
+        print(f"\n[VLM] {result.description[:150]}")
+        print(f"[VLM] Risk → {risk}  ({result.inference_time_ms:.0f}ms)\n")
+    except Exception as exc:
+        with _vlm_lock:
+            _vlm_state["busy"]        = False
+            _vlm_state["description"] = f"[VLM ERROR: {exc}]"
+            _vlm_state["risk"]        = ""
+        print(f"\n[VLM] ERROR: {exc}\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
