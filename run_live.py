@@ -55,6 +55,7 @@ _VESSEL_ALIASES = {
 MODEL_OK = False
 _model   = None
 _backend = "Mock"
+_dnn_net = None   # cv2.dnn fallback
 
 # Prefer ONNX Runtime — no PyTorch/CUDA dependency, faster on Nano CPU
 try:
@@ -82,8 +83,24 @@ if not MODEL_OK:
         MODEL_OK = True
         _backend = "PyTorch"
         print("[MODEL] YOLOv8 PyTorch loaded")
-    except Exception as e:
-        print(f"[MODEL] YOLOv8 unavailable — mock detections active ({e})")
+    except Exception as _e_pt:
+        print(f"[MODEL] PyTorch unavailable ({_e_pt}) — trying cv2.dnn …")
+
+# Fallback: OpenCV DNN (no extra packages — uses bundled ONNX runtime in cv2)
+if not MODEL_OK:
+    _dnn_onnx = Path("edge/models/yolov8n.onnx")
+    if _dnn_onnx.exists():
+        try:
+            _dnn_net = cv2.dnn.readNetFromONNX(str(_dnn_onnx))
+            _dnn_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            _dnn_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            MODEL_OK = True
+            _backend = "cv2.dnn"
+            print("[MODEL] YOLOv8 cv2.dnn loaded (no extra packages required)")
+        except Exception as _e_dnn:
+            print(f"[MODEL] cv2.dnn unavailable ({_e_dnn})")
+    else:
+        print("[MODEL] yolov8n.onnx not found — cv2.dnn skipped")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -180,8 +197,81 @@ def _classify_vessel(bbox: list) -> str:
     return "vessel"          # Small/distant — civilian until confirmed otherwise
 
 
+_COCO80 = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
+    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
+    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
+    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
+    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
+    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
+    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
+    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
+    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
+    "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
+
+def _detect_dnn(frame: np.ndarray) -> list:
+    """Run YOLOv8 inference via cv2.dnn — no ultralytics/onnxruntime needed."""
+    oh, ow = frame.shape[:2]
+    scale  = 640.0 / max(oh, ow)
+    nw, nh = int(ow * scale), int(oh * scale)
+
+    # Letterbox into a 640×640 grey canvas
+    canvas = np.full((640, 640, 3), 114, dtype=np.uint8)
+    canvas[:nh, :nw] = cv2.resize(frame, (nw, nh))
+
+    blob = cv2.dnn.blobFromImage(canvas, 1 / 255.0, (640, 640),
+                                 swapRB=True, crop=False)
+    _dnn_net.setInput(blob)
+    pred = _dnn_net.forward()[0]  # (84, 8400)
+
+    raw_boxes, raw_scores, raw_cls_ids = [], [], []
+    for i in range(pred.shape[1]):
+        col       = pred[:, i]
+        cls_id    = int(np.argmax(col[4:]))
+        conf      = float(col[4 + cls_id])
+        if conf < CONF_THRESHOLD:
+            continue
+        cx, cy, bw, bh = col[:4]
+        x1 = float(np.clip((cx - bw / 2) / nw, 0.0, 1.0))
+        y1 = float(np.clip((cy - bh / 2) / nh, 0.0, 1.0))
+        x2 = float(np.clip((cx + bw / 2) / nw, 0.0, 1.0))
+        y2 = float(np.clip((cy + bh / 2) / nh, 0.0, 1.0))
+        raw_boxes.append([x1, y1, x2, y2])
+        raw_scores.append(conf)
+        raw_cls_ids.append(cls_id)
+
+    if not raw_boxes:
+        return []
+
+    # NMS (cv2 expects x,y,w,h in pixel space)
+    nms_in = [[b[0] * ow, b[1] * oh,
+               (b[2] - b[0]) * ow, (b[3] - b[1]) * oh] for b in raw_boxes]
+    idxs = cv2.dnn.NMSBoxes(nms_in, raw_scores, CONF_THRESHOLD, 0.45)
+    if len(idxs) == 0:
+        return []
+
+    out = []
+    for idx in (idxs.flatten() if hasattr(idxs, "flatten") else idxs):
+        raw_cls  = (_COCO80[raw_cls_ids[idx]]
+                    if raw_cls_ids[idx] < len(_COCO80) else "unknown")
+        cls_name = _VESSEL_ALIASES.get(raw_cls, raw_cls)
+        if cls_name not in TARGET_CLASSES:
+            continue
+        bbox     = raw_boxes[idx]
+        cls_name = _classify_vessel(bbox)
+        out.append((cls_name, raw_scores[idx], bbox))
+    return out
+
+
 def detect(frame: np.ndarray, frame_id: int, mock: bool = False) -> list:
     """Returns list of (cls_name, confidence, [x1,y1,x2,y2] normalised)."""
+    if MODEL_OK and _dnn_net is not None:
+        return _detect_dnn(frame)
     if MODEL_OK:
         results = _model.predict(source=frame, conf=CONF_THRESHOLD, verbose=False)
         out = []
