@@ -349,7 +349,7 @@ def draw_overlay(frame: np.ndarray,
                  tilt_deg: float,
                  fps: float,
                  frame_id: int,
-                 vlm_state: dict | None = None) -> np.ndarray:
+                 vlm_state=None) -> np.ndarray:
     h, w = frame.shape[:2]
     cx_frame, cy_frame = w // 2, h // 2
     out = frame.copy()
