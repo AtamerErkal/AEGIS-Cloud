@@ -70,11 +70,10 @@ camera:
 reasoning:
   ollama_endpoint: "http://localhost:11434"   # Local Ollama server
   model_name: "moondream"                     # Ollama model tag after pull
-  timeout_seconds: 90                         # 90s max — if no answer by then, skip and retry next window
-  max_retries: 3                              # Circuit-breaker trip threshold
-  cooldown_seconds: 60                        # Seconds before circuit-breaker auto-probes Ollama
-  # Moondream native res is 378px; 128px crop is enough for vessel type + threat level
-  image_resize_px: 128                        # Smaller crop = faster encode + faster VLM inference
+  timeout_seconds: 150                        # CPU-only Nano needs ~2min; increase if still timing out
+  max_retries: 1                              # Fail fast: open breaker after 1 timeout, retry after cooldown
+  cooldown_seconds: 30                        # Retry probe every 30s (shorter = more attempts per mission)
+  image_resize_px: 128                        # 128px crop — enough for vessel type + threat level
   options:
     temperature: 0                            # Fully deterministic — no sampling overhead
     num_predict: 35                           # TYPE+THREAT+NOTES fits in 35 tokens
