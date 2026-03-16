@@ -58,6 +58,20 @@ except ImportError:
     _REQUESTS_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
+# Optional direct Moondream — HuggingFace transformers + PyTorch CUDA
+# Bypasses Ollama entirely; uses Jetson Nano's GPU via JetPack PyTorch.
+# Install: pip install transformers pillow
+# ---------------------------------------------------------------------------
+try:
+    from transformers import AutoModelForCausalLM as _AutoModel
+    from transformers import AutoTokenizer as _AutoTokenizer
+    from PIL import Image as _PIL_Image
+    import torch as _torch
+    _DIRECT_AVAILABLE = True
+except ImportError:
+    _DIRECT_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 CONFIG_PATH = Path("edge/config/edge_settings.yaml")
@@ -165,10 +179,16 @@ class ReasoningNode:
         self._degraded: bool = False        # Circuit-breaker flag
         self._degraded_since: float | None = None  # perf_counter timestamp when opened
 
+        # Direct mode: use HuggingFace transformers + CUDA instead of Ollama
+        self._direct_mode: bool = self._rsn_cfg.get("direct_mode", False)
+        self._md_model = None   # lazy-loaded on first _call_direct()
+        self._md_tok   = None
+
         self.logger = logging.getLogger("AEGIS.ReasoningNode")
+        mode_str = "DIRECT/CUDA" if self._direct_mode else f"Ollama({self.endpoint})"
         self.logger.info(
             f"[AEGIS] ReasoningNode initialised — "
-            f"endpoint={self.endpoint}  model={self.model}  "
+            f"mode={mode_str}  model={self.model}  "
             f"sim={self._sim_mode}"
         )
 
@@ -221,11 +241,15 @@ class ReasoningNode:
             else:
                 return self._degraded_result(detection_id)
 
-        crop_b64 = self._encode_crop(frame, bbox)
+        crop_bgr = self._get_crop(frame, bbox)
+        crop_b64 = self._bgr_to_b64(crop_bgr)
         t0 = time.perf_counter()
 
         try:
-            description = self._call_ollama(crop_b64)
+            if self._direct_mode:
+                description = self._call_direct(crop_bgr)
+            else:
+                description = self._call_ollama(crop_b64)
             self._consecutive_failures = 0          # Reset circuit-breaker
         except Exception as exc:
             self._consecutive_failures += 1
@@ -354,32 +378,78 @@ class ReasoningNode:
         with path.open("r", encoding="utf-8") as fh:
             return yaml.safe_load(fh) or {}
 
-    def _encode_crop(self, frame: np.ndarray, bbox: list[float]) -> str:
-        """
-        Crop the bounding-box region from ``frame`` and encode as a
-        base64 PNG string suitable for the Ollama image API.
-
-        The crop is resized to ``image_resize_px`` × ``image_resize_px``
-        (default 336 px, configurable via ``reasoning.image_resize_px``).
-        """
+    def _get_crop(self, frame: np.ndarray, bbox: list) -> np.ndarray:
+        """Crop + resize the bbox region from frame. Returns BGR ndarray."""
         h, w = frame.shape[:2]
         x1, y1 = int(bbox[0] * w), int(bbox[1] * h)
         x2, y2 = int(bbox[2] * w), int(bbox[3] * h)
-
-        # Guard against degenerate boxes
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
-        if x2 <= x1 or y2 <= y1:
-            crop = frame                      # Fall back to full frame
-        else:
-            crop = frame[y1:y2, x1:x2]
-
+        crop = frame[y1:y2, x1:x2] if x2 > x1 and y2 > y1 else frame
         px = self._image_resize_px
-        crop_resized = cv2.resize(crop, (px, px), interpolation=cv2.INTER_LINEAR)
-        ok, buf = cv2.imencode(".png", crop_resized)
+        return cv2.resize(crop, (px, px), interpolation=cv2.INTER_LINEAR)
+
+    @staticmethod
+    def _bgr_to_b64(crop_bgr: np.ndarray) -> str:
+        """Encode a BGR crop as base64 PNG for the Ollama image API."""
+        ok, buf = cv2.imencode(".png", crop_bgr)
         if not ok:
             raise RuntimeError("cv2.imencode failed — cannot prepare image for Moondream.")
         return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    # Keep old name as alias so external callers don't break
+    def _encode_crop(self, frame: np.ndarray, bbox: list) -> str:
+        return self._bgr_to_b64(self._get_crop(frame, bbox))
+
+    def _call_direct(self, crop_bgr: np.ndarray) -> str:
+        """
+        Run Moondream2 inference directly via HuggingFace transformers + CUDA.
+
+        Bypasses Ollama entirely — uses Jetson Nano's GPU through JetPack PyTorch.
+        Model is lazy-loaded and cached on the first call (~1.7 GB download once).
+
+        Install deps:  pip install transformers pillow
+        """
+        if not _DIRECT_AVAILABLE:
+            raise RuntimeError(
+                "Direct mode requires: pip install transformers pillow\n"
+                "torch is pre-installed on JetPack — no extra step needed."
+            )
+
+        # ── Lazy load (once per process) ──────────────────────────────────
+        if self._md_model is None:
+            _MODEL_ID  = "vikhyatk/moondream2"
+            _REVISION  = "2024-08-26"
+            device     = "cuda" if _torch.cuda.is_available() else "cpu"
+            dtype      = _torch.float16 if device == "cuda" else _torch.float32
+            self.logger.info(
+                f"[AEGIS] Loading Moondream2 on {device} "
+                f"(first call — may download ~1.7 GB)…"
+            )
+            self._md_tok = _AutoTokenizer.from_pretrained(
+                _MODEL_ID, revision=_REVISION, trust_remote_code=True
+            )
+            self._md_model = _AutoModel.from_pretrained(
+                _MODEL_ID, revision=_REVISION, trust_remote_code=True,
+                torch_dtype=dtype, low_cpu_mem_usage=True,
+            ).to(device).eval()
+            self.logger.info(f"[AEGIS] Moondream2 READY on {device}")
+
+        # ── Inference ─────────────────────────────────────────────────────
+        pil_img = _PIL_Image.fromarray(crop_bgr[:, :, ::-1])   # BGR → RGB
+        with _torch.no_grad():
+            try:
+                # moondream2 API post-2024
+                result = self._md_model.query(pil_img, _TACTICAL_PROMPT)
+                if isinstance(result, dict):
+                    return result.get("answer", str(result)).strip()
+                return str(result).strip()
+            except AttributeError:
+                # Older revision fallback
+                enc = self._md_model.encode_image(pil_img)
+                return self._md_model.answer_question(
+                    enc, _TACTICAL_PROMPT, self._md_tok
+                ).strip()
 
     def _degraded_result(self, detection_id: str) -> ReasoningResult:
         """Return a pass-through result when the circuit-breaker is open."""

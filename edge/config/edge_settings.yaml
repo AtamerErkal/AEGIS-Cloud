@@ -68,16 +68,17 @@ camera:
 # Pull the model once:  ollama pull moondream
 # ---------------------------------------------------------------------------
 reasoning:
-  ollama_endpoint: "http://localhost:11434"   # Local Ollama server
-  model_name: "moondream"                     # Ollama model tag after pull
-  timeout_seconds: 90                         # 90s max — if no answer by then, skip and retry next window
-  max_retries: 3                              # Circuit-breaker trip threshold
-  cooldown_seconds: 60                        # Seconds before circuit-breaker auto-probes Ollama
-  # Moondream native res is 378px; 128px crop is enough for vessel type + threat level
-  image_resize_px: 128                        # Smaller crop = faster encode + faster VLM inference
+  ollama_endpoint: "http://localhost:11434"   # Local Ollama server (only used when direct_mode: false)
+  model_name: "moondream"                     # Ollama model tag (only used when direct_mode: false)
+  direct_mode: true                           # true = HuggingFace transformers + CUDA (bypasses Ollama)
+                                              # false = Ollama HTTP (CPU-only on Nano, very slow)
+  timeout_seconds: 150                        # Ollama timeout (ignored in direct_mode)
+  max_retries: 1                              # Circuit-breaker trip threshold
+  cooldown_seconds: 30                        # Seconds before auto-probe after breaker opens
+  image_resize_px: 128                        # 128px crop — enough for vessel type + threat level
   options:
     temperature: 0                            # Fully deterministic — no sampling overhead
-    num_predict: 35                           # TYPE+THREAT+NOTES fits in 35 tokens
+    num_predict: 35                           # TYPE+THREAT+NOTES fits in 35 tokens (Ollama only)
 
 # ---------------------------------------------------------------------------
 # SENSORS  (Fusion Engine / Driver Interface)
