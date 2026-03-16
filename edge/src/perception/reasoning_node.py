@@ -419,7 +419,7 @@ class ReasoningNode:
         # ── Lazy load (once per process) ──────────────────────────────────
         if self._md_model is None:
             _MODEL_ID  = "vikhyatk/moondream2"
-            _REVISION  = "2024-08-26"
+            _REVISION  = "2024-05-08"
             device     = "cuda" if _torch.cuda.is_available() else "cpu"
             dtype      = _torch.float16 if device == "cuda" else _torch.float32
             self.logger.info(
