@@ -22,6 +22,7 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -101,6 +102,43 @@ if not MODEL_OK:
             print(f"[MODEL] cv2.dnn unavailable ({_e_dnn})")
     else:
         print("[MODEL] yolov8n.onnx not found — cv2.dnn skipped")
+
+# ── Moondream VLM (optional — requires Ollama + moondream model) ──────────────
+_vlm_lock  = threading.Lock()
+_vlm_state = {
+    "busy":        False,
+    "description": "",
+    "risk":        "",
+    "latency_ms":  0.0,
+}
+# Best-frame window: collect detections for N seconds, send peak frame to VLM
+_VLM_WINDOW_S = 5.0
+_vlm_best = {"conf": 0.0, "frame": None, "bbox": None, "t0": time.perf_counter()}
+
+VLM_OK    = False
+_reasoning = None
+try:
+    from edge.src.perception.reasoning_node import ReasoningNode as _ReasoningNode
+    from edge.src.perception.vision_node import VisionNode as _VisionNode
+    _reasoning = _ReasoningNode()
+    VLM_OK = True
+    print("[VLM] Moondream ReasoningNode ready")
+except Exception as _e_vlm:
+    print(f"[VLM] Moondream unavailable ({_e_vlm}) — run with --no-vlm to silence")
+
+
+def _vlm_worker(frame: np.ndarray, bbox: list, det_id: str) -> None:
+    """Background thread: calls Moondream and updates _vlm_state."""
+    result = _reasoning.describe(frame=frame, bbox=bbox, detection_id=det_id)
+    risk   = _VisionNode._parse_risk_from_description(result.description)
+    with _vlm_lock:
+        _vlm_state["busy"]        = False
+        _vlm_state["description"] = result.description
+        _vlm_state["risk"]        = risk
+        _vlm_state["latency_ms"]  = result.inference_time_ms
+    print(f"\n[VLM] {result.description[:150]}")
+    print(f"[VLM] Risk → {risk}  ({result.inference_time_ms:.0f}ms)\n")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -310,7 +348,8 @@ def draw_overlay(frame: np.ndarray,
                  pan_deg: float,
                  tilt_deg: float,
                  fps: float,
-                 frame_id: int) -> np.ndarray:
+                 frame_id: int,
+                 vlm_state: dict | None = None) -> np.ndarray:
     h, w = frame.shape[:2]
     cx_frame, cy_frame = w // 2, h // 2
     out = frame.copy()
@@ -413,6 +452,28 @@ def draw_overlay(frame: np.ndarray,
         _put(out, f"CONTACT: NONE  [{model_str}]  SCANNING SEA SURFACE...",
              (8, h - 10), scale=0.48, color=C_CYAN)
 
+    # ── VLM status panel (bottom-left, above bottom bar) ──────────────────
+    if vlm_state is not None:
+        vlm_y = bar_y - 30
+        vlm_overlay = out.copy()
+        cv2.rectangle(vlm_overlay, (0, vlm_y - 18), (w, vlm_y + 4), C_DARK, -1)
+        cv2.addWeighted(vlm_overlay, 0.65, out, 0.35, 0, out)
+
+        if vlm_state.get("busy"):
+            _put(out, "VLM: ANALYZING...", (8, vlm_y - 2),
+                 scale=0.48, color=C_YELLOW)
+        elif vlm_state.get("description"):
+            risk  = vlm_state.get("risk", "")
+            lat   = vlm_state.get("latency_ms", 0.0)
+            desc  = vlm_state["description"][:90]
+            risk_color = C_RED if risk == "Hostile" else (C_GREEN if risk == "Friendly" else C_YELLOW)
+            prefix = f"VLM[{lat:.0f}ms] {risk}: " if risk else f"VLM[{lat:.0f}ms]: "
+            _put(out, prefix + desc, (8, vlm_y - 2),
+                 scale=0.45, color=risk_color)
+        else:
+            _put(out, "VLM: waiting for first detection window...",
+                 (8, vlm_y - 2), scale=0.45, color=C_CYAN)
+
     return out
 
 
@@ -465,6 +526,8 @@ def main():
                         help="Detection confidence threshold (default 0.25)")
     parser.add_argument("--mock", action="store_true",
                         help="Force mock detections (useful when no model is available)")
+    parser.add_argument("--no-vlm", action="store_true",
+                        help="Disable Moondream VLM reasoning (faster, no Ollama required)")
     args = parser.parse_args()
 
     # Allow overriding confidence at runtime
@@ -537,6 +600,38 @@ def main():
             # ── Step 1: Detect ────────────────────────────────────────────
             detections = detect(frame, frame_id, mock=args.mock)
 
+            # ── Step 1b: Best-frame selection → Moondream VLM ────────────
+            # Collect the highest-confidence detection over a 5-second window.
+            # When the window expires, send that frame to Moondream in the
+            # background so the video loop is never blocked.
+            if VLM_OK and not args.no_vlm and detections:
+                best_conf = max(d[1] for d in detections)
+                if best_conf > _vlm_best["conf"]:
+                    _vlm_best["conf"]  = best_conf
+                    _vlm_best["frame"] = frame.copy()
+                    _vlm_best["bbox"]  = max(detections, key=lambda d: d[1])[2]
+
+            if VLM_OK and not args.no_vlm:
+                window_elapsed = time.perf_counter() - _vlm_best["t0"]
+                if window_elapsed >= _VLM_WINDOW_S:
+                    with _vlm_lock:
+                        is_busy = _vlm_state["busy"]
+                    if not is_busy and _vlm_best["frame"] is not None:
+                        with _vlm_lock:
+                            _vlm_state["busy"] = True
+                        det_id = f"f{frame_id}_{int(time.time())}"
+                        threading.Thread(
+                            target=_vlm_worker,
+                            args=(_vlm_best["frame"], _vlm_best["bbox"], det_id),
+                            daemon=True,
+                        ).start()
+                        print(f"[VLM] Sending frame {frame_id} to Moondream…")
+                    # Reset window regardless (don't flood VLM)
+                    _vlm_best["conf"]  = 0.0
+                    _vlm_best["frame"] = None
+                    _vlm_best["bbox"]  = None
+                    _vlm_best["t0"]    = time.perf_counter()
+
             # ── Step 2: Servo ─────────────────────────────────────────────
             military_dets = [d for d in detections
                              if d[0] in {"warship", "patrol_boat"}]
@@ -560,8 +655,13 @@ def main():
                 fps_frames = 0
 
             # ── Step 4: Draw ──────────────────────────────────────────────
+            _vlm_snapshot = None
+            if VLM_OK and not args.no_vlm:
+                with _vlm_lock:
+                    _vlm_snapshot = dict(_vlm_state)
             out = draw_overlay(frame, detections, mode,
-                               pan_deg, tilt_deg, fps, frame_id)
+                               pan_deg, tilt_deg, fps, frame_id,
+                               vlm_state=_vlm_snapshot)
 
             # ── Step 5: Display / save ────────────────────────────────────
             if not args.headless:
