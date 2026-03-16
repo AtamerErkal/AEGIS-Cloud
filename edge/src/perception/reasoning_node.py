@@ -63,13 +63,11 @@ except ImportError:
 CONFIG_PATH = Path("edge/config/edge_settings.yaml")
 
 _TACTICAL_PROMPT = (
-    "You are an AI assistant for a naval surveillance drone operator. "
-    "Analyse this maritime image concisely: "
-    "identify the vessel type (warship/patrol boat/cargo ship/tanker/fishing vessel/unknown), "
-    "estimate vessel length and hull colour if visible, "
-    "note any visible armament, radar masts, hull numbers or national markings, "
-    "and recommend a threat level (LOW / MEDIUM / HIGH / CRITICAL). "
-    "If the vessel appears military, state 'MILITARY CONTACT'."
+    "Naval vessel image. One line only: "
+    "TYPE:[warship/patrol/cargo/fishing/unknown] "
+    "THREAT:[LOW/MEDIUM/HIGH/CRITICAL] "
+    "NOTES:[hull colour, armament if visible]. "
+    "If military add MILITARY CONTACT."
 )
 
 _SIM_RESPONSE = (

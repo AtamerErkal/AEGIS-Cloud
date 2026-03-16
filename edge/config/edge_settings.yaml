@@ -70,14 +70,14 @@ camera:
 reasoning:
   ollama_endpoint: "http://localhost:11434"   # Local Ollama server
   model_name: "moondream"                     # Ollama model tag after pull
-  timeout_seconds: 300                        # [AIOPS FIX] Increased to 300s (5 min) for 4GB Swap Thrashing
+  timeout_seconds: 90                         # 90s max — if no answer by then, skip and retry next window
   max_retries: 3                              # Circuit-breaker trip threshold
-  cooldown_seconds: 120                       # Seconds before circuit-breaker auto-probes Ollama
-  # Moondream uses 378x378 native vision resolution; we pass 224x224 crops
-  image_resize_px: 224                        # [AIOPS FIX] Downscaled to 224px for Jetson RAM limits
+  cooldown_seconds: 60                        # Seconds before circuit-breaker auto-probes Ollama
+  # Moondream native res is 378px; 128px crop is enough for vessel type + threat level
+  image_resize_px: 128                        # Smaller crop = faster encode + faster VLM inference
   options:
-    temperature: 0.1                          # Low temp for deterministic tactical output
-    num_predict: 100                          # [AIOPS FIX] Reduced tokens to 100 for faster generation
+    temperature: 0                            # Fully deterministic — no sampling overhead
+    num_predict: 35                           # TYPE+THREAT+NOTES fits in 35 tokens
 
 # ---------------------------------------------------------------------------
 # SENSORS  (Fusion Engine / Driver Interface)
