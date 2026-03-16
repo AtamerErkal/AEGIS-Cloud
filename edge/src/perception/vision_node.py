@@ -101,6 +101,9 @@ _RISK_MAP: dict[str, str] = {
     "patrol_boat":  "Hostile",   # Fast-attack / patrol — Moondream-confirmed
     "ship":         "Unknown",   # Large surface vessel — pending Moondream eval
     "boat":         "Unknown",   # Small vessel — pending Moondream eval
+    "drone":        "Hostile",   # Aerial target — always hostile by default
+    "person":       "Unknown",   # Dismount — context-dependent
+    "vehicle":      "Unknown",   # Ground vehicle — context-dependent
 }
 
 
@@ -704,7 +707,7 @@ class VisionNode:
                 target_type=cls_name,
                 confidence=round(float(confidence), 4),
                 bbox=bbox,
-                risk_level="Hostile" if cls_name == "drone" else "Unknown",
+                risk_level=_RISK_MAP.get(cls_name, "Unknown"),
                 frame_id=self._frame_id
             )
             detections.append(det)
@@ -971,23 +974,37 @@ class VisionNode:
             if self._reasoning is not None:
                 # LOGGING: Vital to see this in the terminal during the 200s wait
                 self.logger.warning(f"!!! [TACTICAL ALERT] Target: {det.target_type} | Starting VLM Reasoning (Est. 200s)...")
-                
+
                 det_id = f"f{det.frame_id}_{int(time.time())}"
-                
+
                 # Execution blocks here while Moondream works
                 result = self._reasoning.describe(
                     frame=frame,
                     bbox=det.bbox,
                     detection_id=det_id,
                 )
-                
+
                 self.logger.info(f"[AEGIS] Moondream Report: {result.description}")
                 self.logger.warning("[AEGIS] VLM reasoning complete. Resuming perception loop.")
-                
+
                 reasoning_results.append(result.to_dict())
                 det.xai_stub["reasoning_description"] = result.description
                 det.xai_stub["reasoning_inference_ms"] = result.inference_time_ms
-                
+
+                # --- RISK LEVEL UPGRADE from Moondream VLM output ---
+                # Moondream's visual analysis overrides the initial YOLO heuristic.
+                # Parse the free-text description for threat indicators and update
+                # det.risk_level so the cloud payload reflects the real assessment.
+                prev_risk = det.risk_level
+                det.risk_level = self._parse_risk_from_description(result.description)
+                if det.risk_level != prev_risk:
+                    self.logger.info(
+                        f"[AEGIS] Risk upgraded by Moondream: "
+                        f"{prev_risk} → {det.risk_level} | {result.description[:80]}"
+                    )
+                    det.xai_stub["risk_upgraded_by_vlm"] = True
+                    det.xai_stub["risk_prev"] = prev_risk
+
                 # Break after first target to keep the edge loop stable
                 break
 
@@ -999,6 +1016,46 @@ class VisionNode:
                 reasoning_results=reasoning_results,
                 aiops_meta=aiops_snapshot,
             )
+
+    @staticmethod
+    def _parse_risk_from_description(description: str) -> str:
+        """
+        Derive a risk level from a Moondream free-text tactical description.
+
+        Keywords used (case-insensitive):
+          Hostile  → "MILITARY CONTACT", "warship", "patrol boat", "armed",
+                     "weapon", "missile", "gun", "CRITICAL", "HIGH"
+          Friendly → "fishing", "cargo", "tanker", "civilian", "commercial",
+                     "LOW"
+          Unknown  → anything else (pass-through)
+
+        Returns
+        -------
+        str
+            "Hostile" | "Friendly" | "Unknown"
+        """
+        text = description.upper()
+
+        hostile_keywords = [
+            "MILITARY CONTACT", "WARSHIP", "PATROL BOAT", "PATROL VESSEL",
+            "ARMED", "WEAPON", "MISSILE", "GUN", "CANNON",
+            "THREAT LEVEL: HIGH", "THREAT LEVEL: CRITICAL",
+            "THREAT: HIGH", "THREAT: CRITICAL",
+            ": HIGH", ": CRITICAL",
+        ]
+        friendly_keywords = [
+            "FISHING", "CARGO SHIP", "TANKER", "CIVILIAN",
+            "COMMERCIAL", "MERCHANT",
+            "THREAT LEVEL: LOW", "THREAT: LOW", ": LOW",
+        ]
+
+        for kw in hostile_keywords:
+            if kw in text:
+                return "Hostile"
+        for kw in friendly_keywords:
+            if kw in text:
+                return "Friendly"
+        return "Unknown"
 
     def release(self) -> None:
         """Release camera/video capture resources."""
