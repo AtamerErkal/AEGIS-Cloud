@@ -180,7 +180,7 @@ def _classify_vessel(bbox: list) -> str:
     return "vessel"          # Small/distant — civilian until confirmed otherwise
 
 
-def detect(frame: np.ndarray, frame_id: int) -> list:
+def detect(frame: np.ndarray, frame_id: int, mock: bool = False) -> list:
     """Returns list of (cls_name, confidence, [x1,y1,x2,y2] normalised)."""
     if MODEL_OK:
         results = _model.predict(source=frame, conf=CONF_THRESHOLD, verbose=False)
@@ -195,13 +195,15 @@ def detect(frame: np.ndarray, frame_id: int) -> list:
                 cls_name = _classify_vessel(bbox)
                 out.append((cls_name, float(box.conf.item()), bbox))
         return out
-    # Mock: vessel crossing frame — simulates drone patrol over sea
-    t  = frame_id % 300
-    cx = 0.05 + t * 0.003
-    mock_bbox = [cx - 0.08, 0.42, cx + 0.08, 0.58]
-    return [(_classify_vessel(mock_bbox),
-             round(0.75 + (frame_id % 5) * 0.02, 2),
-             mock_bbox)]
+    if mock:
+        # Mock: vessel crossing frame — simulates drone patrol over sea
+        t  = frame_id % 300
+        cx = 0.05 + t * 0.003
+        mock_bbox = [cx - 0.08, 0.42, cx + 0.08, 0.58]
+        return [(_classify_vessel(mock_bbox),
+                 round(0.75 + (frame_id % 5) * 0.02, 2),
+                 mock_bbox)]
+    return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -255,6 +257,19 @@ def draw_overlay(frame: np.ndarray,
 
     # Military contact takes priority as tracking target
     tracking_target = best_military if best_military else best_det
+
+    # ── Search sweep indicator (SEARCHING mode only) ──────────────────────
+    if mode == "SEARCHING":
+        # Map pan_deg (30..150) to x pixel — shows where camera is looking
+        sweep_x = int(np.clip((pan_deg - 30.0) / 120.0, 0.0, 1.0) * w)
+        cv2.line(out, (sweep_x, 0), (sweep_x, h), C_CYAN, 1, cv2.LINE_AA)
+        # Shade the expected sweep band
+        band_x1 = int(max(0,     (90.0 - SEARCH_AMP - 30.0) / 120.0 * w))
+        band_x2 = int(min(w - 1, (90.0 + SEARCH_AMP - 30.0) / 120.0 * w))
+        band_overlay = out.copy()
+        cv2.rectangle(band_overlay, (band_x1, 0), (band_x2, h), C_CYAN, -1)
+        cv2.addWeighted(band_overlay, 0.07, out, 0.93, 0, out)
+        _put(out, "SCANNING", (sweep_x + 6, h // 2), scale=0.5, color=C_CYAN)
 
     # ── Line from crosshair to tracking target ────────────────────────────
     if tracking_target is not None:
@@ -358,6 +373,8 @@ def main():
                         help="Stop at end of video instead of looping")
     parser.add_argument("--conf", type=float, default=None,
                         help="Detection confidence threshold (default 0.25)")
+    parser.add_argument("--mock", action="store_true",
+                        help="Force mock detections (useful when no model is available)")
     args = parser.parse_args()
 
     # Allow overriding confidence at runtime
@@ -393,7 +410,12 @@ def main():
     if total_frames > 0:
         dur = total_frames / src_fps
         print(f"  Duration  : {dur:.1f}s  ({total_frames} frames @ {src_fps:.0f}fps)")
-    print(f"  Model     : {'YOLOv8n [' + _backend + ']' if MODEL_OK else 'Mock detections'}")
+    _model_str = 'YOLOv8n [' + _backend + ']' if MODEL_OK else 'NO MODEL'
+    if not MODEL_OK and args.mock:
+        _model_str += ' + MOCK detections forced'
+    elif not MODEL_OK:
+        _model_str += ' — no detections (pass --mock to simulate)'
+    print(f"  Model     : {_model_str}")
     print(f"  Servo     : {'PCA9685 ACTIVE' if SERVO_OK else 'Simulation (log only)'}")
     print(f"  Display   : {'headless' if args.headless else 'window'}")
     if args.save:
@@ -423,7 +445,7 @@ def main():
             t0 = time.perf_counter()
 
             # ── Step 1: Detect ────────────────────────────────────────────
-            detections = detect(frame, frame_id)
+            detections = detect(frame, frame_id, mock=args.mock)
 
             # ── Step 2: Servo ─────────────────────────────────────────────
             military_dets = [d for d in detections
