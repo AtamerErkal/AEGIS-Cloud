@@ -41,7 +41,7 @@ try:
     print("[SERVO] PCA9685 connected")
 except Exception as e:
     SERVO_OK = False
-    print(f"[SERVO] PCA9685 not found — angles will be logged only ({e})")
+    print(f"[SERVO] PCA9685 not found - angles will be logged only ({e})")
 
 # ── YOLOv8 ───────────────────────────────────────────────────────────────────
 # COCO-80 maritime remaps: surface vessel labels normalised for naval context
