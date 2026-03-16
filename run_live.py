@@ -6,19 +6,31 @@ Drone-mounted YOLOv8 detection -> vessel classification -> PCA9685 servo trackin
 Scans sea surface for vessels. Locks onto military contacts.
 
 Usage:
-  python run_live.py --camera 0          # USB webcam / drone camera
-  python run_live.py --video path/to.mp4 # video file
-  python run_live.py --gstreamer         # IMX219 CSI camera (Nano)
+  python run_live.py --camera 0                      # USB webcam / drone camera
+  python run_live.py --video path/to.mp4             # video file (with GUI)
+  python run_live.py --video path/to.mp4 --headless  # SSH / no display (logs only)
+  python run_live.py --video path/to.mp4 --save out.mp4   # save annotated output
+  python run_live.py --gstreamer                     # IMX219 CSI camera (Nano)
+
+SSH example:
+  ssh user@drone 'cd AEGIS-Cloud && python run_live.py \\
+      --video data/videos/test_ship.mp4 \\
+      --save data/videos/test_ship_out.mp4'
 """
 
 import argparse
 import math
+import os
 import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+# Auto-detect headless: no DISPLAY env var → force headless mode
+_HEADLESS_AUTO = (os.environ.get("DISPLAY", "") == "" and
+                  os.environ.get("WAYLAND_DISPLAY", "") == "")
 
 # ── PCA9685 ──────────────────────────────────────────────────────────────────
 try:
@@ -77,7 +89,7 @@ if not MODEL_OK:
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 TARGET_CLASSES  = {"vessel", "boat", "ship"}   # Maritime surface contacts only
-CONF_THRESHOLD  = 0.35                          # Lower threshold — distant vessels at horizon
+CONF_THRESHOLD  = 0.25                          # Low threshold — catches distant/partial vessels
 KP, KD, DEADZONE = 0.4, 0.05, 0.03
 SEARCH_SPEED    = 0.4   # rad/s — pan sweep speed in search mode
 SEARCH_AMP      = 60.0  # degrees — half-amplitude of search sweep
@@ -339,31 +351,73 @@ def main():
                      default=Path("data/sim_samples/maritime_sim.mp4"))
     src.add_argument("--gstreamer", action="store_true")
     parser.add_argument("--headless", action="store_true",
-                        help="Disable GUI window (no display needed)")
+                        help="Disable GUI window (required for SSH / no display)")
+    parser.add_argument("--save", type=Path, default=None,
+                        help="Save annotated output video to this path (e.g. out.mp4)")
+    parser.add_argument("--no-loop", action="store_true",
+                        help="Stop at end of video instead of looping")
+    parser.add_argument("--conf", type=float, default=None,
+                        help="Detection confidence threshold (default 0.25)")
     args = parser.parse_args()
 
+    # Allow overriding confidence at runtime
+    if args.conf is not None:
+        global CONF_THRESHOLD
+        CONF_THRESHOLD = args.conf
+
+    # Respect auto-detected headless (SSH without X11 forwarding)
+    if _HEADLESS_AUTO:
+        args.headless = True
+
     cap, label = open_capture(args)
+
+    # ── Video info (for progress display) ─────────────────────────────────
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    src_fps      = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    src_w        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    src_h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    is_file      = (args.video is not None and not args.gstreamer
+                    and args.camera is None)
+
+    # ── Optional output writer ─────────────────────────────────────────────
+    writer = None
+    if args.save:
+        args.save.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(args.save), fourcc, src_fps, (src_w, src_h))
+        print(f"[SAVE] Output → {args.save}")
 
     print("\n" + "=" * 65)
     print("  AEGIS — Maritime Surveillance Pipeline")
     print(f"  Source    : {label}")
+    if total_frames > 0:
+        dur = total_frames / src_fps
+        print(f"  Duration  : {dur:.1f}s  ({total_frames} frames @ {src_fps:.0f}fps)")
     print(f"  Model     : {'YOLOv8n [' + _backend + ']' if MODEL_OK else 'Mock detections'}")
     print(f"  Servo     : {'PCA9685 ACTIVE' if SERVO_OK else 'Simulation (log only)'}")
+    print(f"  Display   : {'headless' if args.headless else 'window'}")
+    if args.save:
+        print(f"  Saving    : {args.save}")
     print("  Targets   : vessel / patrol_boat / warship")
-    print("  Priority  : MILITARY contacts lock immediately")
-    print("  Stop      : press Q in the window or Ctrl+C")
+    print("  Stop      : press Q in window  or  Ctrl+C")
     print("=" * 65 + "\n")
 
-    frame_id  = 0
-    fps       = 0.0
-    fps_t     = time.perf_counter()
+    frame_id   = 0
+    fps        = 0.0
+    fps_t      = time.perf_counter()
     fps_frames = 0
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
+                if is_file and args.no_loop:
+                    print(f"\n[DONE] End of video ({frame_id} frames processed)")
+                    break
+                # Loop: rewind
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                if is_file:
+                    print("[LOOP] Rewinding video …")
                 continue
 
             t0 = time.perf_counter()
@@ -372,7 +426,6 @@ def main():
             detections = detect(frame, frame_id)
 
             # ── Step 2: Servo ─────────────────────────────────────────────
-            # Military contacts (warship/patrol_boat) take tracking priority
             military_dets = [d for d in detections
                              if d[0] in {"warship", "patrol_boat"}]
             if military_dets:
@@ -394,40 +447,52 @@ def main():
                 fps_t      = time.perf_counter()
                 fps_frames = 0
 
-            # ── Step 4: Draw & display ────────────────────────────────────
+            # ── Step 4: Draw ──────────────────────────────────────────────
             out = draw_overlay(frame, detections, mode,
                                pan_deg, tilt_deg, fps, frame_id)
-            if not args.headless:
-                cv2.imshow("AEGIS  |  Live Tracking", out)
 
-            # ── Step 5: Terminal log ──────────────────────────────────────
-            all_dets = military_dets if military_dets else detections
+            # ── Step 5: Display / save ────────────────────────────────────
+            if not args.headless:
+                cv2.imshow("AEGIS  |  Maritime Surveillance", out)
+            if writer is not None:
+                writer.write(out)
+
+            # ── Step 6: Terminal log ──────────────────────────────────────
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            progress   = f"{frame_id}/{total_frames}" if total_frames > 0 else f"F{frame_id}"
+            all_dets   = military_dets if military_dets else detections
             if all_dets:
-                best = max(all_dets, key=lambda d: d[1])
+                best    = max(all_dets, key=lambda d: d[1])
                 mil_tag = " [!!MILITARY!!]" if best[0] in {"warship", "patrol_boat"} else ""
                 print(
-                    f"[F{frame_id:04d}] {mode:14s} | "
+                    f"[{progress}] {mode:14s} | "
                     f"{best[0]:12s} {best[1]:.2f}{mil_tag} | "
                     f"brg={pan_deg:6.1f}  elev={tilt_deg:6.1f} | "
-                    f"{(time.perf_counter()-t0)*1000:.0f}ms"
+                    f"{elapsed_ms:.0f}ms"
                 )
             else:
-                print(
-                    f"[F{frame_id:04d}] {'SCANNING':14s} | "
-                    f"brg={pan_deg:6.1f}  elev={tilt_deg:6.1f} | "
-                    f"{(time.perf_counter()-t0)*1000:.0f}ms"
-                )
+                # Only log search status every 25 frames to reduce noise
+                if frame_id % 25 == 0:
+                    print(
+                        f"[{progress}] {'SCANNING':14s} | "
+                        f"brg={pan_deg:6.1f}  elev={tilt_deg:6.1f} | "
+                        f"{elapsed_ms:.0f}ms"
+                    )
 
             if not args.headless and cv2.waitKey(1) & 0xFF == ord("q"):
+                print("\n[STOPPED] Q pressed")
                 break
 
             frame_id += 1
 
     except KeyboardInterrupt:
-        print("\n[STOPPED]")
+        print("\n[STOPPED] Ctrl+C")
     finally:
         _write_servo(90.0, 90.0)
         cap.release()
+        if writer is not None:
+            writer.release()
+            print(f"[SAVED] {args.save}")
         cv2.destroyAllWindows()
         print("[DONE] Servo centred, camera released.")
 
